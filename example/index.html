@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Coverage Test Target</title>
+        <style>
+            :root {
+                --bg: #1a1a2e;
+                --surface: #16213e;
+                --surface2: #0f3460;
+                --accent: #e94560;
+                --accent2: #53d8fb;
+                --text: #eaeaea;
+                --text-dim: #8892a4;
+                --success: #4ecca3;
+                --warn: #f5a623;
+                --error: #e94560;
+                --radius: 8px;
+            }
+
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: "Segoe UI", system-ui, sans-serif;
+                background: var(--bg);
+                color: var(--text);
+                min-height: 100vh;
+                padding: 20px;
+            }
+
+            h1 {
+                font-size: 1.4rem;
+                margin-bottom: 4px;
+            }
+            h2 {
+                font-size: 1.1rem;
+                color: var(--accent2);
+                margin-bottom: 10px;
+            }
+
+            .header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 16px 20px;
+                background: var(--surface);
+                border-radius: var(--radius);
+                margin-bottom: 16px;
+            }
+            .header .status {
+                font-size: 0.85rem;
+                color: var(--text-dim);
+            }
+
+            .grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                gap: 16px;
+            }
+
+            .card {
+                background: var(--surface);
+                border-radius: var(--radius);
+                padding: 20px;
+                border: 1px solid transparent;
+                transition: border-color 0.2s;
+            }
+            .card:hover {
+                border-color: var(--surface2);
+            }
+
+            button {
+                background: var(--surface2);
+                color: var(--text);
+                border: none;
+                padding: 8px 16px;
+                border-radius: var(--radius);
+                cursor: pointer;
+                font-size: 0.85rem;
+                transition:
+                    background 0.15s,
+                    transform 0.1s;
+            }
+            button:hover {
+                background: var(--accent);
+            }
+            button:active {
+                transform: scale(0.97);
+            }
+            button.success {
+                background: var(--success);
+                color: #111;
+            }
+            button.warn {
+                background: var(--warn);
+                color: #111;
+            }
+            button.small {
+                padding: 4px 10px;
+                font-size: 0.78rem;
+            }
+
+            input,
+            select,
+            textarea {
+                background: var(--bg);
+                color: var(--text);
+                border: 1px solid var(--surface2);
+                padding: 8px 12px;
+                border-radius: var(--radius);
+                font-size: 0.85rem;
+                width: 100%;
+                margin-bottom: 8px;
+            }
+            input:focus,
+            select:focus,
+            textarea:focus {
+                outline: none;
+                border-color: var(--accent2);
+            }
+
+            input[type="range"] {
+                -webkit-appearance: none;
+                height: 6px;
+                border: none;
+                background: var(--surface2);
+                border-radius: 3px;
+                padding: 0;
+            }
+
+            input[type="checkbox"] {
+                width: auto;
+                margin-right: 6px;
+            }
+
+            .tag {
+                display: inline-block;
+                padding: 2px 8px;
+                border-radius: 12px;
+                font-size: 0.75rem;
+                margin: 2px;
+            }
+            .tag-high {
+                background: var(--error);
+                color: #fff;
+            }
+            .tag-med {
+                background: var(--warn);
+                color: #111;
+            }
+            .tag-low {
+                background: var(--success);
+                color: #111;
+            }
+
+            .task-list {
+                list-style: none;
+                margin-top: 10px;
+            }
+            .task-list li {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px;
+                border-radius: 4px;
+                margin-bottom: 4px;
+                background: var(--bg);
+                cursor: grab;
+                transition: opacity 0.2s;
+            }
+            .task-list li.done span {
+                text-decoration: line-through;
+                color: var(--text-dim);
+            }
+            .task-list li.dragging {
+                opacity: 0.4;
+            }
+
+            .modal-overlay {
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.6);
+                z-index: 100;
+                justify-content: center;
+                align-items: center;
+            }
+            .modal-overlay.open {
+                display: flex;
+            }
+            .modal {
+                background: var(--surface);
+                border-radius: var(--radius);
+                padding: 24px;
+                max-width: 400px;
+                width: 90%;
+            }
+            .modal h2 {
+                margin-bottom: 12px;
+            }
+            .modal .actions {
+                display: flex;
+                gap: 8px;
+                margin-top: 16px;
+                justify-content: flex-end;
+            }
+
+            .counter-display {
+                font-size: 3rem;
+                font-weight: 700;
+                text-align: center;
+                padding: 16px;
+                font-variant-numeric: tabular-nums;
+            }
+            .counter-controls {
+                display: flex;
+                gap: 8px;
+                justify-content: center;
+            }
+
+            .progress-bar {
+                height: 8px;
+                background: var(--bg);
+                border-radius: 4px;
+                overflow: hidden;
+                margin: 10px 0;
+            }
+            .progress-bar .fill {
+                height: 100%;
+                background: var(--accent2);
+                transition: width 0.3s;
+                border-radius: 4px;
+            }
+
+            .toast-container {
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                z-index: 200;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            .toast {
+                padding: 12px 20px;
+                border-radius: var(--radius);
+                font-size: 0.85rem;
+                animation: slideIn 0.3s ease;
+                max-width: 300px;
+            }
+            .toast-info {
+                background: var(--surface2);
+            }
+            .toast-success {
+                background: var(--success);
+                color: #111;
+            }
+            .toast-error {
+                background: var(--error);
+            }
+            .toast-warn {
+                background: var(--warn);
+                color: #111;
+            }
+
+            @keyframes slideIn {
+                from {
+                    transform: translateX(100%);
+                    opacity: 0;
+                }
+                to {
+                    transform: translateX(0);
+                    opacity: 1;
+                }
+            }
+
+            .tabs {
+                display: flex;
+                gap: 4px;
+                margin-bottom: 12px;
+            }
+            .tabs button {
+                border-radius: 4px 4px 0 0;
+            }
+            .tabs button.active {
+                background: var(--accent2);
+                color: #111;
+            }
+            .tab-panel {
+                display: none;
+            }
+            .tab-panel.active {
+                display: block;
+            }
+
+            .drop-zone {
+                border: 2px dashed var(--surface2);
+                border-radius: var(--radius);
+                padding: 24px;
+                text-align: center;
+                color: var(--text-dim);
+                transition:
+                    border-color 0.2s,
+                    background 0.2s;
+                margin-top: 10px;
+            }
+            .drop-zone.over {
+                border-color: var(--accent2);
+                background: rgba(83, 216, 251, 0.05);
+            }
+
+            .color-swatch {
+                width: 32px;
+                height: 32px;
+                border-radius: 50%;
+                display: inline-block;
+                margin: 4px;
+                cursor: pointer;
+                border: 2px solid transparent;
+                transition:
+                    border-color 0.15s,
+                    transform 0.15s;
+            }
+            .color-swatch:hover {
+                transform: scale(1.15);
+            }
+            .color-swatch.selected {
+                border-color: #fff;
+            }
+
+            .log-output {
+                background: var(--bg);
+                border-radius: 4px;
+                padding: 10px;
+                font-family: monospace;
+                font-size: 0.78rem;
+                max-height: 150px;
+                overflow-y: auto;
+                margin-top: 8px;
+                color: var(--text-dim);
+                line-height: 1.6;
+            }
+
+            .kbd {
+                display: inline-block;
+                background: var(--bg);
+                border: 1px solid var(--surface2);
+                border-radius: 3px;
+                padding: 1px 6px;
+                font-family: monospace;
+                font-size: 0.78rem;
+            }
+
+            .flex-row {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+            }
+            .flex-wrap {
+                flex-wrap: wrap;
+            }
+            .mt {
+                margin-top: 10px;
+            }
+            .mb {
+                margin-bottom: 10px;
+            }
+            .text-dim {
+                color: var(--text-dim);
+                font-size: 0.82rem;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Header -->
+        <div class="header">
+            <div>
+                <h1>Coverage Test Target</h1>
+                <div class="status" id="statusBar">
+                    Ready — interact with widgets to exercise code paths
+                </div>
+            </div>
+            <div class="flex-row">
+                <button id="btnThemeToggle" title="Toggle theme">
+                    🌙 Theme
+                </button>
+                <button id="btnResetAll" class="warn" title="Reset everything">
+                    ↺ Reset
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="grid">
+            <!-- 1. Counter Widget -->
+            <div class="card">
+                <h2>Counter</h2>
+                <div class="counter-display" id="counterValue">0</div>
+                <div class="counter-controls">
+                    <button id="btnDecrement">− 1</button>
+                    <button id="btnIncrement">+ 1</button>
+                    <button id="btnDouble" class="small">×2</button>
+                    <button id="btnReset" class="small">Reset</button>
+                </div>
+                <p class="text-dim mt" id="counterStatus">
+                    Click buttons or use arrow keys
+                </p>
+            </div>
+
+            <!-- 2. Task Manager -->
+            <div class="card">
+                <h2>Tasks</h2>
+                <div class="flex-row mb">
+                    <input
+                        type="text"
+                        id="taskInput"
+                        placeholder="Add a task…"
+                        style="margin: 0"
+                    />
+                    <select id="taskPriority" style="width: auto">
+                        <option value="low">Low</option>
+                        <option value="med">Med</option>
+                        <option value="high">High</option>
+                    </select>
+                    <button id="btnAddTask">Add</button>
+                </div>
+                <ul class="task-list" id="taskList"></ul>
+                <p class="text-dim" id="taskCount">0 tasks</p>
+            </div>
+
+            <!-- 3. Form Validation -->
+            <div class="card">
+                <h2>Validated Form</h2>
+                <label class="text-dim">Name</label>
+                <input type="text" id="formName" placeholder="Your name" />
+                <label class="text-dim">Email</label>
+                <input
+                    type="email"
+                    id="formEmail"
+                    placeholder="your@email.com"
+                />
+                <label class="text-dim">Age</label>
+                <input
+                    type="number"
+                    id="formAge"
+                    placeholder="18-120"
+                    min="1"
+                    max="200"
+                />
+                <label class="text-dim">Category</label>
+                <select id="formCategory">
+                    <option value="">Select…</option>
+                    <option value="personal">Personal</option>
+                    <option value="work">Work</option>
+                    <option value="other">Other</option>
+                </select>
+                <div class="flex-row mt">
+                    <input type="checkbox" id="formAgree" /><label
+                        for="formAgree"
+                        class="text-dim"
+                        >I agree to terms</label
+                    >
+                </div>
+                <button id="btnSubmitForm" class="success mt">Submit</button>
+                <div id="formErrors" class="text-dim mt"></div>
+            </div>
+
+            <!-- 4. Tabs Widget -->
+            <div class="card">
+                <h2>Tabbed Content</h2>
+                <div class="tabs">
+                    <button class="active" data-tab="tab1">Overview</button>
+                    <button data-tab="tab2">Details</button>
+                    <button data-tab="tab3">Settings</button>
+                </div>
+                <div id="tab1" class="tab-panel active">
+                    <p class="text-dim">
+                        This is the overview panel. Try switching tabs.
+                    </p>
+                    <div class="progress-bar mt">
+                        <div
+                            class="fill"
+                            id="progressFill"
+                            style="width: 0%"
+                        ></div>
+                    </div>
+                    <div class="flex-row mt">
+                        <input
+                            type="range"
+                            id="progressSlider"
+                            min="0"
+                            max="100"
+                            value="0"
+                        />
+                        <span id="progressLabel" class="text-dim">0%</span>
+                    </div>
+                </div>
+                <div id="tab2" class="tab-panel">
+                    <p class="text-dim">
+                        Details panel. Select a color theme accent:
+                    </p>
+                    <div class="mt" id="colorSwatches">
+                        <div
+                            class="color-swatch selected"
+                            data-color="#e94560"
+                            style="background: #e94560"
+                        ></div>
+                        <div
+                            class="color-swatch"
+                            data-color="#53d8fb"
+                            style="background: #53d8fb"
+                        ></div>
+                        <div
+                            class="color-swatch"
+                            data-color="#4ecca3"
+                            style="background: #4ecca3"
+                        ></div>
+                        <div
+                            class="color-swatch"
+                            data-color="#f5a623"
+                            style="background: #f5a623"
+                        ></div>
+                        <div
+                            class="color-swatch"
+                            data-color="#a78bfa"
+                            style="background: #a78bfa"
+                        ></div>
+                    </div>
+                </div>
+                <div id="tab3" class="tab-panel">
+                    <p class="text-dim mb">Settings panel.</p>
+                    <div class="flex-row mb">
+                        <input type="checkbox" id="settingNotify" /><label
+                            for="settingNotify"
+                            class="text-dim"
+                            >Enable notifications</label
+                        >
+                    </div>
+                    <div class="flex-row mb">
+                        <input type="checkbox" id="settingSound" /><label
+                            for="settingSound"
+                            class="text-dim"
+                            >Enable sounds</label
+                        >
+                    </div>
+                    <div class="flex-row mb">
+                        <input type="checkbox" id="settingAutoSave" /><label
+                            for="settingAutoSave"
+                            class="text-dim"
+                            >Auto-save</label
+                        >
+                    </div>
+                    <button id="btnSaveSettings" class="success small">
+                        Save Settings
+                    </button>
+                </div>
+            </div>
+
+            <!-- 5. Search & Filter -->
+            <div class="card">
+                <h2>Search & Filter</h2>
+                <input
+                    type="text"
+                    id="searchInput"
+                    placeholder="Type to search items…"
+                />
+                <div class="flex-row flex-wrap mb">
+                    <button class="small active" data-filter="all">All</button>
+                    <button class="small" data-filter="fruit">Fruit</button>
+                    <button class="small" data-filter="veggie">Veggie</button>
+                    <button class="small" data-filter="grain">Grain</button>
+                </div>
+                <ul class="task-list" id="searchResults"></ul>
+                <p class="text-dim" id="searchCount">Showing all items</p>
+            </div>
+
+            <!-- 6. Calculator -->
+            <div class="card">
+                <h2>Calculator</h2>
+                <div class="flex-row mb">
+                    <input
+                        type="number"
+                        id="calcA"
+                        placeholder="A"
+                        style="width: 80px"
+                    />
+                    <select id="calcOp" style="width: auto">
+                        <option value="add">+</option>
+                        <option value="sub">−</option>
+                        <option value="mul">×</option>
+                        <option value="div">÷</option>
+                        <option value="mod">%</option>
+                        <option value="pow">^</option>
+                    </select>
+                    <input
+                        type="number"
+                        id="calcB"
+                        placeholder="B"
+                        style="width: 80px"
+                    />
+                    <button id="btnCalc">=</button>
+                </div>
+                <div id="calcResult" class="text-dim">
+                    Enter values and pick an operation
+                </div>
+            </div>
+
+            <!-- 7. Drop Zone & File Sim -->
+            <div class="card">
+                <h2>Drag & Drop Zone</h2>
+                <p class="text-dim">
+                    Drag tasks here to archive, or click to simulate file
+                    upload.
+                </p>
+                <div class="drop-zone" id="dropZone">
+                    <p>Drop items here</p>
+                </div>
+                <div id="dropLog" class="text-dim mt">
+                    No items dropped yet.
+                </div>
+            </div>
+
+            <!-- 8. Event Log -->
+            <div class="card">
+                <h2>Event Log</h2>
+                <p class="text-dim mb">
+                    All interactions are logged here. Shortcuts:
+                    <span class="kbd">Ctrl+L</span> clear,
+                    <span class="kbd">Ctrl+E</span> export
+                </p>
+                <div class="log-output" id="eventLog">— log start —</div>
+                <div class="flex-row mt">
+                    <button id="btnClearLog" class="small">Clear</button>
+                    <button id="btnExportLog" class="small">Export</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal -->
+        <div class="modal-overlay" id="modalOverlay">
+            <div class="modal" id="modalContent">
+                <h2 id="modalTitle">Confirm</h2>
+                <p id="modalBody" class="text-dim">Are you sure?</p>
+                <div class="actions">
+                    <button id="modalCancel">Cancel</button>
+                    <button id="modalConfirm" class="success">Confirm</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toasts -->
+        <div class="toast-container" id="toastContainer"></div>
+
+        <script src="index.js"></script>
+    </body>
+</html>
