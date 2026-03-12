@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Drag from one coordinate to another.
+
+Mouse-down at (X1, Y1), move to (X2, Y2), mouse-up.
+Requires calibration (run `click` at screen center first).
+"""
+
+import subprocess
+
+import typer
+
+from cua_config import get_display, load_config, map_coords, require_calibration
+
+app = typer.Typer(add_completion=False)
+
+
+@app.command()
+def cua_drag(
+    x1: int = typer.Argument(..., help="Start X (pixels, model space)"),
+    y1: int = typer.Argument(..., help="Start Y (pixels, model space)"),
+    x2: int = typer.Argument(..., help="End X (pixels, model space)"),
+    y2: int = typer.Argument(..., help="End Y (pixels, model space)"),
+) -> None:
+    """Drag from (X1, Y1) to (X2, Y2)."""
+    cfg = load_config()
+    cal = require_calibration(cfg)
+    env = get_display(cfg)
+
+    sx1, sy1 = map_coords(cfg, cal, x1, y1)
+    sx2, sy2 = map_coords(cfg, cal, x2, y2)
+
+    try:
+        subprocess.run(
+            ["xdotool", "mousemove", "--sync", str(sx1), str(sy1)],
+            check=True,
+            env=env,
+        )
+        subprocess.run(["xdotool", "mousedown", "1"], check=True, env=env)
+        subprocess.run(
+            ["xdotool", "mousemove", "--sync", str(sx2), str(sy2)],
+            check=True,
+            env=env,
+        )
+        subprocess.run(["xdotool", "mouseup", "1"], check=True, env=env)
+    except FileNotFoundError:
+        typer.echo("xdotool not found. Install with: apt install xdotool", err=True)
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"Drag failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(
+        f"Dragged model({x1},{y1})→({x2},{y2}) screen({sx1},{sy1})→({sx2},{sy2})"
+    )
+
+
+if __name__ == "__main__":
+    app()

@@ -1,5 +1,6 @@
 FROM debian:bookworm-slim
 
+ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DISPLAY=:99
 ENV SCREEN_WIDTH=1280
@@ -25,12 +26,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
-RUN python3 -m venv /app/venv && \
-    /app/venv/bin/pip install -r /app/requirements.txt
+RUN pip install --break-system-packages -r /app/requirements.txt
 
 COPY start.sh /app/start.sh
 COPY agent.py /app/agent.py
-RUN chmod +x /app/start.sh
+COPY cua_config.py /app/cua_config.py
+COPY config.ini /app/config.ini
+COPY tools /app/tools
+COPY example /app/example
+
+RUN chmod +x /app/tools/* && \
+    chmod +x /app/agent.py && \
+    chmod +x /app/start.sh
+
+# Tools import cua_config as a module — make sure /app is on PYTHONPATH
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+ENV PATH="/app/tools:${PATH}"
 
 WORKDIR /app
 ENTRYPOINT ["/app/start.sh"]

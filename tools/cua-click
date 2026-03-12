@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Click or double-click at a screen coordinate.
+
+If no calibration exists yet, the first invocation is treated as the
+calibration click (model clicking screen center).  The scale factors
+are computed and saved; no actual click is performed.  All subsequent
+calls apply the calibration and click normally.
+"""
+
+import subprocess
+import time
+
+import typer
+
+from cua_config import (
+    get_display,
+    load_calibration,
+    load_config,
+    map_coords,
+    save_calibration,
+)
+
+app = typer.Typer(add_completion=False)
+
+
+@app.command()
+def cua_click(
+    x: int = typer.Argument(..., help="X coordinate (pixels)"),
+    y: int = typer.Argument(..., help="Y coordinate (pixels)"),
+    button: int = typer.Option(
+        None, "--button", "-b", help="Mouse button: 1=left 2=middle 3=right"
+    ),
+    double: bool = typer.Option(
+        False, "--double", "-d", help="Double-click instead of single click"
+    ),
+    right: bool = typer.Option(
+        False, "--right", "-r", help="Right-click (shorthand for --button 3)"
+    ),
+) -> None:
+    """Click at screen coordinate (X, Y).
+
+    On first run (no calibration), this is interpreted as the model
+    clicking the screen center.  Coordinate scaling is computed and
+    saved for all subsequent tool invocations.
+    """
+    cfg = load_config()
+    env = get_display(cfg)
+    w = cfg.getint("screen", "width")
+    h = cfg.getint("screen", "height")
+    cal = load_calibration(cfg)
+
+    # ── Calibration on first click ──
+    if cal is None:
+        cx, cy = w / 2, h / 2
+        if x <= 0 or y <= 0:
+            typer.echo(
+                f"Calibration failed: coordinates ({x}, {y}) are invalid.\n"
+                f"Click the center of the screen ({cx:.0f}, {cy:.0f}).",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        scale_x = cx / x
+        scale_y = cy / y
+        path = save_calibration(cfg, scale_x, scale_y)
+        typer.echo(
+            f"Calibrated. model({x},{y}) → screen({cx:.0f},{cy:.0f})  "
+            f"scale=({scale_x:.4f}, {scale_y:.4f})  saved={path}"
+        )
+        return
+
+    # ── Normal click ──
+    btn = (
+        3
+        if right
+        else (button if button is not None else cfg.getint("mouse", "default_button"))
+    )
+    sx, sy = map_coords(cfg, cal, x, y)
+    delay = cfg.getfloat("mouse", "move_delay")
+
+    try:
+        subprocess.run(
+            ["xdotool", "mousemove", "--sync", str(sx), str(sy)],
+            check=True,
+            env=env,
+        )
+        time.sleep(delay)
+
+        if double:
+            repeat = cfg.getint("mouse", "double_click_repeat")
+            click_delay = cfg.getint("mouse", "double_click_delay_ms")
+            subprocess.run(
+                [
+                    "xdotool",
+                    "click",
+                    "--repeat",
+                    str(repeat),
+                    "--delay",
+                    str(click_delay),
+                    "1",
+                ],
+                check=True,
+                env=env,
+            )
+            typer.echo(f"Double-clicked model({x},{y}) → screen({sx},{sy})")
+        else:
+            subprocess.run(
+                ["xdotool", "click", str(btn)],
+                check=True,
+                env=env,
+            )
+            typer.echo(f"Clicked model({x},{y}) → screen({sx},{sy}) button={btn}")
+
+    except FileNotFoundError:
+        typer.echo("xdotool not found. Install with: apt install xdotool", err=True)
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"Click failed: {e}", err=True)
+        raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()

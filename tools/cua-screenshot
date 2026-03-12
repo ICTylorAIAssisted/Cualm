@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Take a screenshot and output as base64-encoded PNG.
+
+Captures the X11 display configured in config.ini.  Requires 'scrot'.
+"""
+
+import base64
+import subprocess
+import sys
+
+import typer
+
+from cua_config import get_display, load_config
+
+app = typer.Typer(add_completion=False)
+
+
+@app.command()
+def cua_screenshot(
+    path: str = typer.Option(
+        None, "--path", "-p", help="Temp file path for the screenshot"
+    ),
+    raw: bool = typer.Option(
+        False, "--raw", help="Output raw PNG bytes instead of base64"
+    ),
+) -> None:
+    """Take a screenshot and print base64 PNG to stdout."""
+    cfg = load_config()
+
+    if path is None:
+        path = cfg.get("screenshot", "path")
+
+    tool = cfg.get("screenshot", "tool")
+    tool_args = cfg.get("screenshot", "tool_args").format(path=path)
+    cmd = [tool] + tool_args.split()
+
+    try:
+        subprocess.run(cmd, check=True, env=get_display(cfg), capture_output=True)
+    except FileNotFoundError:
+        typer.echo(
+            f"Screenshot tool '{tool}' not found. Install with: apt install {tool}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"Screenshot failed: {e.stderr.decode().strip()}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
+        typer.echo(f"Screenshot file not created at {path}", err=True)
+        raise typer.Exit(1)
+
+    if raw:
+        sys.stdout.buffer.write(data)
+    else:
+        # Write to stdout without trailing newline via typer
+        sys.stdout.write(base64.b64encode(data).decode())
+        sys.stdout.write("\n")
+
+
+if __name__ == "__main__":
+    app()

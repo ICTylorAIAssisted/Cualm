@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Signal that the current task is complete.
+
+Outputs a structured completion marker that the agent loop detects.
+Use --result to return extracted data (links, values, answers).
+"""
+
+import json
+from typing import Optional
+
+import typer
+
+app = typer.Typer(add_completion=False)
+
+# Marker that the agent scans for in command output
+DONE_MARKER = "@@CUA_TASK_COMPLETE@@"
+
+
+@app.command()
+def cua_done(
+    summary: str = typer.Argument(
+        ..., help="Brief description of what was accomplished"
+    ),
+    result: Optional[str] = typer.Option(
+        None,
+        "--result",
+        "-r",
+        help="Extracted value (link, text, number) if the task asked for one",
+    ),
+) -> None:
+    """Signal task completion.
+
+    \b
+    Examples:
+      done "Opened Wikipedia and searched for AI"
+      done "Found the reference link" --result "https://example.com/ref1"
+      done "Price is 42.50" -r "42.50"
+    """
+    payload = {"summary": summary}
+    if result is not None:
+        payload["result"] = result
+
+    typer.echo(DONE_MARKER)
+    typer.echo(json.dumps(payload))
+
+
+if __name__ == "__main__":
+    app()

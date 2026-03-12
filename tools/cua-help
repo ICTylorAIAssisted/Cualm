@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Show available CUA tools and their usage.
+
+Discovers all sibling tools in the same directory and prints a
+quick-reference summary.  Pass a tool name for detailed help.
+"""
+
+import os
+import subprocess
+import sys
+from typing import Optional
+
+import typer
+
+from cua_config import load_config
+
+app = typer.Typer(add_completion=False)
+
+# Tools listed in intended display order with one-line descriptions.
+# If a new tool is added to the directory but not here, it still shows
+# up under "Other tools" at the bottom.
+TOOL_ORDER = [
+    ("click", "Click / double-click / right-click at coordinates"),
+    ("type", "Type text via simulated keypresses"),
+    ("key", "Press a key or key combination"),
+    ("scroll", "Scroll at a screen position"),
+    ("drag", "Drag from one point to another"),
+    ("wait", "Wait (sleep) for a duration"),
+    ("screenshot", "Take a screenshot (base64 PNG to stdout)"),
+    ("done", "Signal task completion"),
+    ("help", "Show this help (you are here)"),
+]
+
+_SKIP = {"__pycache__", "help"}
+
+
+def _tools_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _list_all() -> None:
+    """Print the quick-reference table."""
+    typer.echo("Available CUA tools:\n")
+    known_names = {name for name, _ in TOOL_ORDER}
+    for name, desc in TOOL_ORDER:
+        typer.echo(f"  {name:14s} {desc}")
+
+    # Discover any tools not in the curated list
+    tools_dir = _tools_dir()
+    extras = sorted(
+        f
+        for f in os.listdir(tools_dir)
+        if os.path.isfile(os.path.join(tools_dir, f))
+        and not f.startswith(".")
+        and f not in known_names
+        and f not in _SKIP
+        and not f.endswith(".pyc")
+    )
+    if extras:
+        typer.echo("")
+        for name in extras:
+            typer.echo(f"  {name:14s} (run '{name} --help' for details)")
+
+    typer.echo(
+        "\nRun 'help <tool>' or '<tool> --help' for detailed usage.\n"
+        "You can also run arbitrary shell commands (ls, cat, curl, grep, etc.)."
+    )
+
+
+def _show_tool_help(name: str) -> None:
+    """Run <tool> --help and display its output."""
+    tool_path = os.path.join(_tools_dir(), name)
+    if not os.path.isfile(tool_path):
+        typer.echo(f"Unknown tool: {name}", err=True)
+        typer.echo("Run 'help' with no arguments to see all available tools.", err=True)
+        raise typer.Exit(1)
+
+    env = dict(os.environ)
+    env.setdefault("PYTHONPATH", "")
+    # Ensure cua_config is findable
+    parent = os.path.dirname(_tools_dir())
+    if parent not in env["PYTHONPATH"]:
+        env["PYTHONPATH"] = f"{parent}:{env['PYTHONPATH']}"
+
+    result = subprocess.run(
+        [sys.executable, tool_path, "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    output = result.stdout or result.stderr
+    if output:
+        typer.echo(output.rstrip())
+    else:
+        typer.echo(f"No help available for '{name}'.")
+
+
+@app.command()
+def cua_help(
+    tool: Optional[str] = typer.Argument(
+        None, help="Tool name to show detailed help for"
+    ),
+) -> None:
+    """Show available tools and their usage.
+
+    \b
+    With no arguments, lists all tools with brief descriptions.
+    With a tool name, shows that tool's full --help output.
+
+    \b
+    Examples:
+      help            List all tools
+      help click      Show click usage
+      help done       Show done usage
+    """
+    if tool is None:
+        _list_all()
+    else:
+        _show_tool_help(tool)
+
+
+if __name__ == "__main__":
+    app()

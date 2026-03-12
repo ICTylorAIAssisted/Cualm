@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Scroll at a screen coordinate.
+
+Moves the mouse to (X, Y), then sends scroll-wheel events.
+Requires calibration (run `click` at screen center first).
+"""
+
+import subprocess
+from enum import Enum
+
+import typer
+
+from cua_config import get_display, load_config, map_coords, require_calibration
+
+app = typer.Typer(add_completion=False)
+
+
+class Direction(str, Enum):
+    up = "up"
+    down = "down"
+
+
+@app.command()
+def cua_scroll(
+    x: int = typer.Argument(..., help="X coordinate (pixels, model space)"),
+    y: int = typer.Argument(..., help="Y coordinate (pixels, model space)"),
+    direction: Direction = typer.Option(
+        Direction.down, "--direction", "-d", help="Scroll direction"
+    ),
+    clicks: int = typer.Option(None, "--clicks", "-c", help="Number of scroll clicks"),
+) -> None:
+    """Scroll at screen coordinate (X, Y)."""
+    cfg = load_config()
+    cal = require_calibration(cfg)
+    env = get_display(cfg)
+
+    if clicks is None:
+        clicks = cfg.getint("scroll", "default_clicks")
+
+    sx, sy = map_coords(cfg, cal, x, y)
+    button = "4" if direction == Direction.up else "5"
+
+    try:
+        subprocess.run(
+            ["xdotool", "mousemove", "--sync", str(sx), str(sy)],
+            check=True,
+            env=env,
+        )
+        subprocess.run(
+            ["xdotool", "click", "--repeat", str(clicks), button],
+            check=True,
+            env=env,
+        )
+    except FileNotFoundError:
+        typer.echo("xdotool not found. Install with: apt install xdotool", err=True)
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"Scroll failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(
+        f"Scrolled {direction.value} {clicks} clicks model({x},{y}) → screen({sx},{sy})"
+    )
+
+
+if __name__ == "__main__":
+    app()

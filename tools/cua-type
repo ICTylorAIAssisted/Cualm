@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Type text via simulated keypresses.
+
+Each character is typed individually with a configurable inter-key
+delay.  Requires 'xdotool'.
+"""
+
+import subprocess
+import sys
+from typing import Optional
+
+import typer
+
+from cua_config import get_display, load_config
+
+app = typer.Typer(add_completion=False)
+
+
+@app.command("type")
+def cua_type(
+    text: Optional[str] = typer.Argument(
+        None, help="Text to type (use quotes for spaces/special chars)"
+    ),
+    delay: Optional[int] = typer.Option(
+        None, "--delay", "-d", help="Delay between keystrokes in ms"
+    ),
+    stdin: bool = typer.Option(
+        False, "--stdin", help="Read text from stdin instead of argument"
+    ),
+) -> None:
+    """Type text by simulating individual keypresses."""
+    cfg = load_config()
+    env = get_display(cfg)
+
+    if delay is None:
+        delay = cfg.getint("keyboard", "type_delay_ms")
+
+    if stdin:
+        content = sys.stdin.read()
+    elif text is not None:
+        content = text
+    else:
+        typer.echo(
+            "No text provided.\n"
+            'Usage: type "Hello, world!"\n'
+            '       echo "Hello" | type --stdin',
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if not content:
+        typer.echo("Empty text. Nothing to type.", err=True)
+        raise typer.Exit(1)
+
+    try:
+        subprocess.run(
+            ["xdotool", "type", "--clearmodifiers", "--delay", str(delay), content],
+            check=True,
+            env=env,
+        )
+    except FileNotFoundError:
+        typer.echo("xdotool not found. Install with: apt install xdotool", err=True)
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"Typing failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Typed {len(content)} character(s)")
+
+
+if __name__ == "__main__":
+    app()
