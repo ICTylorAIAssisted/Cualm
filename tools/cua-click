@@ -55,7 +55,7 @@ def cua_click(
         if x <= 0 or y <= 0:
             typer.echo(
                 f"Calibration failed: coordinates ({x}, {y}) are invalid.\n"
-                f"Click the center of the screen ({cx:.0f}, {cy:.0f}).",
+                f"Click the center of the button on screen to calibrate.",
                 err=True,
             )
             raise typer.Exit(1)
@@ -67,7 +67,7 @@ def cua_click(
             f"Calibrated. model({x},{y}) → screen({cx:.0f},{cy:.0f})  "
             f"scale=({scale_x:.4f}, {scale_y:.4f})  saved={path}"
         )
-        return
+        cal = load_calibration(cfg)
 
     # ── Normal click ──
     btn = (

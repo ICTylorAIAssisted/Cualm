@@ -32,15 +32,17 @@ echo "VNC available on port 5900"
 
 # Chromium — note: just "chromium" on Debian, not "chromium-browser"
 chromium \
+    --start-fullscreen \
     --no-first-run \
     --no-default-browser-check \
     --disable-gpu \
     --disable-software-rasterizer \
     --disable-dev-shm-usage \
     --no-sandbox \
+    --test-type \
     --window-size="${SCREEN_WIDTH},${SCREEN_HEIGHT}" \
     --start-maximized \
-    "about:blank" 2>/dev/null &
+    "file:///app/calibration/index.html" 2>/dev/null &
 sleep 2
 
 if [ "$1" = "agent" ]; then

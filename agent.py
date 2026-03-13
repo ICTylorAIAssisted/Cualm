@@ -2,14 +2,14 @@
 """CUA agent: screenshot → LLM → shell command loop.
 
 The model sees a Linux desktop via screenshots and controls it by
-emitting shell commands.  Each action is a stateless CLI tool (click,
-type, key, …) that the model invokes through a single "run" interface.
+emitting shell commands.  Each action is a stateless CLI tool (cua-click,
+cua-type, cua-key, …) that the model invokes through a single "run" interface.
 
-Calibration is handled by the tools themselves: the `click` tool
+Calibration is handled by the tools themselves: the `cua-click` tool
 auto-calibrates on first use, and other coordinate tools refuse to
 run until calibration exists.
 
-Task completion is signalled by the `done` tool, which emits a
+Task completion is signalled by the `cua-done` tool, which emits a
 structured marker the agent detects.
 """
 
@@ -195,13 +195,13 @@ def take_screenshot() -> str:
 
 # ── LLM helpers ───────────────────────────────────────────
 
-SYSTEM_PROMPT = f"""You are a computer-use agent. You see screenshots of a Linux desktop ({SCREEN_W}x{SCREEN_H}) with Chromium.
+SYSTEM_PROMPT = """You are a computer-use agent. You see screenshots of a Linux desktop with Chromium.
 
 You control the computer by running shell commands. Each turn, think
 briefly about what to do, then write exactly one command on a line
 starting with "run: ". Everything after "run: " is executed in a shell.
 
-Available CLI tools (run any with --help for usage, or run "help" for a summary):
+Available CLI tools (run any with --help for usage, or run "cua-help" for a summary):
 
   cua-click X Y [--button N] [--double] [--right]   Click at coordinates
   cua-type "text" [--delay MS]                       Type text
@@ -214,20 +214,20 @@ Available CLI tools (run any with --help for usage, or run "help" for a summary)
   cua-help [tool]                                     List tools or show detailed usage
 
 You may also run arbitrary shell commands (ls, cat, curl, grep, etc.).
-Coordinates are in the model's pixel space — calibration mapping is automatic.
 
-When the task is complete, use the done tool with a summary.
+
+When the task is complete, use the cua-done tool with a summary.
 When asked to find or report a value, pass it via --result.
 
 Examples:
-  run: cua-click 640 400
+  run: cua-click 450 300
   run: cua-type "hello world"
   run: cua-key ctrl+a
   run: cua-done "Opened Wikipedia" --result "https://en.wikipedia.org"
   run: cat /etc/os-release | head -5
 """
 
-CALIBRATION_PROMPT = "Click the exact center of the screen."
+CALIBRATION_PROMPT = "You see a button on screen. Click it."
 
 
 def make_user_msg(img_b64: str, text: str) -> ChatCompletionMessageParam:
@@ -365,10 +365,20 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         print(f"   ⚠ Calibration failed: {e}, running identity calibration")
         # Force identity calibration by clicking actual center
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
-        output = run_command(f"click {cx} {cy}")
+        output = run_command(f"cua-click {cx} {cy}")
         print(f"   Fallback: {output}")
-        messages.append(make_assistant_msg(f"run: click {cx} {cy}"))
+        messages.append(make_assistant_msg(f"run: cua-click {cx} {cy}"))
         messages.append({"role": "user", "content": output})
+
+    # return to windowed mode
+    run_command("cua-key F11")
+
+    # Let the calibration target page dismiss before the first screenshot
+    time.sleep(0.5)
+
+    # Reset context — drop calibration exchange so the model starts fresh
+    # and doesn't treat the calibration click as the user's actual task.
+    messages = [make_system_msg(SYSTEM_PROMPT)]
 
     # ── Main loop ──
     for step in range(max_steps):
@@ -489,8 +499,8 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 if __name__ == "__main__":
     task = (
         " ".join(sys.argv[1:])
-        or "Open Chromium and search Artificial Intelligence in Wikipedia"
-        " (by loading wikipedia.org first)."
-        " Answer with the first link from the references."
+        or "Open Chromium and find Artificial Intelligence article in Wikipedia"
+        " (by loading wikipedia.org first and searching)."
+        " Answer with the first link from the article references."
     )
     run_agent(task)

@@ -10,14 +10,14 @@ agent invokes through a single `run` interface.
  LLM                        Agent                     Shell
  ───                        ─────                     ─────
   ← screenshot ────────────── take screenshot
-  → "I'll click center       ─── extract_command() ─→ run: click 640 400
-     run: click 640 400"     ─── run_command()     ─→ click 640 400
-                              ←── capture stdout,  ←  Calibrated. model(640,400) → ...
+  → "I see a button.         ─── extract_command() ─→ run: cua-click 450 300
+     run: cua-click 450 300" ─── run_command()     ─→ cua-click 450 300
+                              ←── capture stdout,  ←  Calibrated. model(450,300) → ...
                                    stderr, timing
   ← formatted output ──────
   ← screenshot ──────────────
-  → "Task complete.          ─── run_command()     ─→ done "Finished" --result "42"
-     run: done ..."          ←── detects marker    ←  @@CUA_TASK_COMPLETE@@
+  → "Task complete.          ─── run_command()     ─→ cua-done "Finished" --result "42"
+     run: cua-done ..."      ←── detects marker    ←  @@CUA_TASK_COMPLETE@@
                                                        {"summary":"Finished","result":"42"}
 ```
 
@@ -27,16 +27,16 @@ the output back.  No JSON wrapper — just a prefix convention.
 
 ## CLI Tools
 
-| Tool         | Purpose                                    |
-|--------------|--------------------------------------------|
-| `click`      | Click / double-click / right-click         |
-| `type`       | Type text via simulated keypresses          |
-| `key`        | Press key combinations                      |
-| `scroll`     | Scroll at a position                        |
-| `drag`       | Drag between two points                     |
-| `wait`       | Sleep for a duration                        |
-| `screenshot` | Take screenshot (base64 to stdout)          |
-| `done`       | Signal task completion                      |
+| Tool             | Purpose                                    |
+|------------------|--------------------------------------------|
+| `cua-click`      | Click / double-click / right-click         |
+| `cua-type`       | Type text via simulated keypresses          |
+| `cua-key`        | Press key combinations                      |
+| `cua-scroll`     | Scroll at a position                        |
+| `cua-drag`       | Drag between two points                     |
+| `cua-wait`       | Sleep for a duration                        |
+| `cua-screenshot` | Take screenshot (base64 to stdout)          |
+| `cua-done`       | Signal task completion                      |
 
 Every tool uses [Typer](https://typer.tiangolo.com/) and has `--help`
 with full usage docs, reads defaults from `config.ini`, validates
@@ -47,12 +47,19 @@ inputs, and gives actionable error messages.
 Coordinate tools need a calibration that maps model pixel space to
 actual screen pixels.  This is handled automatically:
 
-1. The agent asks the model to "click the exact center of the screen"
-2. The model emits `click X Y` with its best guess
-3. The `click` tool detects no calibration exists, computes scale
-   factors from the model's guess vs. actual screen center, and
-   saves them to `/tmp/cua_calibration.json`
-4. All subsequent coordinate tools (`click`, `scroll`, `drag`)
+1. On startup, Chromium loads a calibration page with a single large
+   button centered on screen
+2. The agent shows the model a screenshot and asks it to click the
+   button — the model is *not* told the screen resolution, so it must
+   rely on its visual perception to locate the target
+3. The model emits `cua-click X Y` with the coordinates where it
+   sees the button
+4. The `cua-click` tool detects no calibration exists, computes scale
+   factors from the model's coordinates vs. actual screen center, saves
+   them to `/tmp/cua_calibration.json`, and performs the physical click
+5. The button's click handler navigates to `about:blank`, clearing the
+   calibration page before the main task loop begins
+6. All subsequent coordinate tools (`cua-click`, `cua-scroll`, `cua-drag`)
    read the calibration and map coordinates transparently
 
 You can also override calibration via environment variables:
@@ -87,7 +94,7 @@ starting with `run: ` to indicate the command to execute:
 
 ```
 I need to click the search box which is near the top of the page.
-run: click 640 120
+run: cua-click 450 120
 ```
 
 The agent scans for the first line matching `run: <command>` (case-insensitive)
@@ -183,7 +190,7 @@ docker run -d --name cua \
     cua-agent
 
 # Then tell the agent to open the page
-docker exec cua /app/venv/bin/python3 /app/agent.py \
+docker exec cua /app/agent.py \
     "Open http://host.docker.internal:8080 in Chromium"
 ```
 

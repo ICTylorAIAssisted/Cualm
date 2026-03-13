@@ -34,6 +34,7 @@ COPY cua_config.py /app/cua_config.py
 COPY config.ini /app/config.ini
 COPY tools /app/tools
 COPY example /app/example
+COPY calibration /app/calibration
 
 RUN chmod +x /app/tools/* && \
     chmod +x /app/agent.py && \
