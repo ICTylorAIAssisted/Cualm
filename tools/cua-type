@@ -41,7 +41,7 @@ def cua_type(
         content = text
     else:
         typer.echo(
-            "No text provided.\n"
+            'No text provided.\n'
             'Usage: type "Hello, world!"\n'
             '       echo "Hello" | type --stdin',
             err=True,

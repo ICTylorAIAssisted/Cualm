@@ -90,8 +90,8 @@ def die(msg: str, code: int = 1) -> None:
 # ── Calibration ────────────────────────────────────────────
 
 _CAL_NO_CALIBRATION_MSG = (
-    "No calibration found. The agent must click the screen center first.\n"
-    "Run:  click <center_x> <center_y>\n"
+    "No calibration found. The agent must complete calibration first.\n"
+    "Run:  cua-click <x> <y>  on the calibration target.\n"
     "This will establish coordinate mapping for all tools."
 )
 

@@ -2,18 +2,14 @@
 """CUA agent: screenshot → LLM → shell command loop.
 
 The model sees a Linux desktop via screenshots and controls it by
-emitting shell commands.  Each action is a stateless CLI tool (cua-click,
-cua-type, cua-key, …) that the model invokes through a single "run" interface.
+emitting shell commands.  Each action is a standalone CLI tool (cua-click,
+cua-type, cua-key, …) that the model invokes through a single "run"
+interface.
 
-Calibration is handled by the tools themselves: the `cua-click` tool
-auto-calibrates on first use, and other coordinate tools refuse to
-run until calibration exists.
-
-Task completion is signalled by the `cua-done` tool, which emits a
-structured marker the agent detects.
+Plugins extend behavior via hooks and swappable functions.  See
+plugins/README.md for the full API.
 """
 
-import base64
 import json
 import os
 import re
@@ -21,15 +17,16 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime
 from typing import Any
 
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from cua_config import load_config
+from plugin_host import PluginHost
+from tool_discovery import discover_tools
 
-# ── Done marker (must match tools/done) ───────────────────
+# ── Done marker (must match tools/cua-done) ──────────────
 DONE_MARKER = "@@CUA_TASK_COMPLETE@@"
 
 # ── Configuration ─────────────────────────────────────────
@@ -51,75 +48,138 @@ PREAMBLE_SIZE = cfg.getint("llm", "preamble_size")
 MAX_OUTPUT_BYTES = cfg.getint("run", "max_output_bytes")
 RUN_OUTPUT_DIR = cfg.get("run", "output_dir")
 
-AUDIT_BASE = cfg.get("audit", "base_dir")
-
-# ── OpenAI client ─────────────────────────────────────────
-client = OpenAI(
-    base_url=os.environ.get("OPENAI_BASE_URL", "http://localhost:8000/v1"),
-    api_key=os.environ.get("OPENAI_API_KEY", "not-needed"),
-)
 MODEL = os.environ.get("CUA_MODEL", "your-model-name")
 
-# ── Audit ─────────────────────────────────────────────────
+CALIBRATION_PROMPT = "You see a button on screen. Click it."
+
+PLUGINS_DIR = os.environ.get(
+    "CUA_PLUGINS_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"),
+)
 
 
-def create_session_dir() -> str:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    d = os.path.join(AUDIT_BASE, f"session_{ts}")
-    os.makedirs(d, exist_ok=True)
-    return d
+# ── System prompt builder ─────────────────────────────────
 
 
-SESSION_DIR = create_session_dir()
+PROMPT_TEMPLATE = """\
+You are a computer-use agent. You see screenshots of a Linux desktop.
 
-# ── Token tracking ────────────────────────────────────────
+You control the computer by running shell commands. Each turn, think
+briefly about what to do, then write exactly one command on a line
+starting with "run: ". Everything after "run: " is executed in a shell.
+
+Available CLI tools (run any with --help for usage):
+
+{tools}
+
+You may also run arbitrary shell commands (ls, cat, curl, grep, etc.).
+Coordinates are in your pixel space — calibration mapping is automatic.
+
+When the task is complete, use the cua-done tool with a summary.
+When asked to find or report a value, pass it via --result.
+{extra}
+Examples:
+  run: cua-click 450 300
+  run: cua-type "hello world"
+  run: cua-key ctrl+a
+  run: cua-done "Opened Wikipedia" --result "https://en.wikipedia.org"
+  run: cat /etc/os-release | head -5
+"""
 
 
-class UsageTracker:
-    def __init__(self) -> None:
-        self.prompt_tokens = 0
-        self.completion_tokens = 0
-        self.total_tokens = 0
-        self.llm_calls = 0
-        self.total_llm_time_sec = 0.0
+def build_system_prompt(ctx: dict) -> str:
+    """Assemble the system prompt from discovered tools and plugin extras."""
+    tool_lines = discover_tools()
+    tool_lines.extend(ctx.get("extra_tools", []))
+    tools_section = "\n".join(tool_lines)
 
-    def record(self, prompt: int, completion: int, total: int, elapsed: float) -> None:
-        self.prompt_tokens += prompt
-        self.completion_tokens += completion
-        self.total_tokens += total
-        self.llm_calls += 1
-        self.total_llm_time_sec += elapsed
+    extra_parts = ctx.get("extra_prompt", [])
+    extra_section = "\n\n".join(extra_parts)
+    if extra_section:
+        extra_section = "\n\n" + extra_section + "\n"
+    else:
+        extra_section = "\n"
 
-    def tokens_per_sec(self) -> float:
-        return (
-            self.completion_tokens / self.total_llm_time_sec
-            if self.total_llm_time_sec > 0
-            else 0.0
+    return PROMPT_TEMPLATE.format(tools=tools_section, extra=extra_section)
+
+
+# ── Default swappable functions ───────────────────────────
+# These are used unless a plugin overrides them in ctx.
+
+_openai_client = None
+
+
+def _get_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(
+            base_url=os.environ.get("OPENAI_BASE_URL", "http://localhost:8000/v1"),
+            api_key=os.environ.get("OPENAI_API_KEY", "not-needed"),
         )
+    return _openai_client
 
-    def print_step(self, prompt: int, completion: int, elapsed: float) -> None:
-        tps = completion / elapsed if elapsed > 0 else 0.0
-        print(
-            f"   Tokens: {prompt}→{completion}"
-            f" ({elapsed:.1f}s, {tps:.1f} tok/s)"
-            f" | Session: {self.total_tokens} total"
-            f", {self.tokens_per_sec():.1f} avg tok/s"
+
+def default_llm_call(ctx: dict, messages: list[ChatCompletionMessageParam]) -> str:
+    """Call the LLM via OpenAI-compatible API."""
+    client = _get_client()
+    t0 = time.monotonic()
+    response = client.chat.completions.create(
+        model=MODEL,
+        max_tokens=LLM_MAX_TOKENS,
+        messages=messages,
+        temperature=LLM_TEMPERATURE,
+    )
+    elapsed = time.monotonic() - t0
+
+    content = response.choices[0].message.content
+    if content is None:
+        raise ValueError("LLM returned empty content")
+
+    # Stash usage info for the hook
+    ctx["_last_usage"] = {
+        "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+        "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+        "total_tokens": response.usage.total_tokens if response.usage else 0,
+        "elapsed_sec": elapsed,
+    }
+    return content
+
+
+def default_screenshot(ctx: dict) -> str:
+    """Take a screenshot via the cua-screenshot tool, return base64."""
+    result = subprocess.run(
+        ["cua-screenshot"], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"screenshot failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def default_command_runner(ctx: dict, command: str) -> str:
+    """Execute *command* in a shell, return formatted output."""
+    call_uid = uuid.uuid4().hex[:12]
+
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(
+            command, shell=True, capture_output=True, timeout=30,
         )
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - t0
+        return f"Command timed out after 30s\n[exit:124; {elapsed:.2f}s]"
+    elapsed = time.monotonic() - t0
 
-    def info(self) -> dict[str, Any]:
-        return {
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "total_tokens": self.total_tokens,
-            "llm_calls": self.llm_calls,
-            "total_llm_time_sec": round(self.total_llm_time_sec, 2),
-            "avg_completion_tokens_per_sec": round(self.tokens_per_sec(), 2),
-        }
+    stdout_text = _truncate(proc.stdout, "stdout", call_uid, "out")
+    stderr_text = _truncate(proc.stderr, "stderr", call_uid, "err")
 
+    parts: list[str] = []
+    if stdout_text:
+        parts.append(stdout_text)
+    if stderr_text:
+        parts.append(f"stderr: {stderr_text}")
+    parts.append(f"[exit:{proc.returncode}; {elapsed:.2f}s]")
 
-usage_tracker = UsageTracker()
-
-# ── Run tool ──────────────────────────────────────────────
+    return "\n".join(parts)
 
 
 def _truncate(data: bytes, label: str, call_uid: str, ext: str) -> str:
@@ -140,94 +200,37 @@ def _truncate(data: bytes, label: str, call_uid: str, ext: str) -> str:
     return f"{notice}\n{truncated}"
 
 
-def run_command(command: str) -> str:
-    """Execute *command* in a shell, return formatted output."""
-    call_uid = uuid.uuid4().hex[:12]
+def default_extract_command(ctx: dict, text: str) -> str:
+    """Extract the shell command from an LLM reply.
 
-    t0 = time.monotonic()
-    try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - t0
-        return f"Command timed out after 30s\n[exit:124; {elapsed:.2f}s]"
-    elapsed = time.monotonic() - t0
+    Looks for a line starting with 'run:' (case-insensitive), after
+    stripping <think> blocks, markdown fences, and surrounding prose.
+    """
+    text = text.strip()
 
-    stdout_text = _truncate(proc.stdout, "stdout", call_uid, "out")
-    stderr_text = _truncate(proc.stderr, "stderr", call_uid, "err")
+    # Strip <think>…</think> blocks (Qwen, DeepSeek, etc.)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    if "</think>" in text:
+        text = text.split("</think>")[-1]
+    text = text.strip()
 
-    parts: list[str] = []
-    if stdout_text:
-        parts.append(stdout_text)
-    if stderr_text:
-        parts.append(f"stderr: {stderr_text}")
-    parts.append(f"[exit:{proc.returncode}; {elapsed:.2f}s]")
+    # Strip markdown fences if the whole response is wrapped
+    m = re.search(r"```(?:\w*)\s*(.*?)\s*```", text, re.DOTALL)
+    if m:
+        text = m.group(1).strip()
 
-    return "\n".join(parts)
+    # Scan lines for 'run:' prefix
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("run:"):
+            command = stripped[4:].strip()
+            if command:
+                return command
 
-
-# ── Screenshot ────────────────────────────────────────────
+    raise ValueError("No 'run: <command>' line found in response")
 
 
-def take_screenshot() -> str:
-    """Take a screenshot via the screenshot tool, return base64."""
-    result = subprocess.run(
-        ["cua-screenshot"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"screenshot failed: {result.stderr.strip()}")
-
-    b64 = result.stdout.strip()
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    audit_path = os.path.join(SESSION_DIR, f"{ts}.png")
-    with open(audit_path, "wb") as f:
-        f.write(base64.b64decode(b64))
-
-    return b64
-
-
-# ── LLM helpers ───────────────────────────────────────────
-
-SYSTEM_PROMPT = """You are a computer-use agent. You see screenshots of a Linux desktop with Chromium.
-
-You control the computer by running shell commands. Each turn, think
-briefly about what to do, then write exactly one command on a line
-starting with "run: ". Everything after "run: " is executed in a shell.
-
-Available CLI tools (run any with --help for usage, or run "cua-help" for a summary):
-
-  cua-click X Y [--button N] [--double] [--right]   Click at coordinates
-  cua-type "text" [--delay MS]                       Type text
-  cua-key COMBO                                      Press keys (ctrl+a, Return, alt+F4)
-  cua-scroll X Y [--direction up|down] [--clicks N]  Scroll at position
-  cua-drag X1 Y1 X2 Y2                               Drag between points
-  cua-wait [MS]                                       Wait (default 1000ms)
-  cua-screenshot                                      Take screenshot (base64 to stdout)
-  cua-done "summary" [--result "value"]               Signal task completion
-  cua-help [tool]                                     List tools or show detailed usage
-
-You may also run arbitrary shell commands (ls, cat, curl, grep, etc.).
-
-
-When the task is complete, use the cua-done tool with a summary.
-When asked to find or report a value, pass it via --result.
-
-Examples:
-  run: cua-click 450 300
-  run: cua-type "hello world"
-  run: cua-key ctrl+a
-  run: cua-done "Opened Wikipedia" --result "https://en.wikipedia.org"
-  run: cat /etc/os-release | head -5
-"""
-
-CALIBRATION_PROMPT = "You see a button on screen. Click it."
+# ── Message helpers ───────────────────────────────────────
 
 
 def make_user_msg(img_b64: str, text: str) -> ChatCompletionMessageParam:
@@ -251,67 +254,13 @@ def make_system_msg(text: str) -> ChatCompletionMessageParam:
     return {"role": "system", "content": text}
 
 
-def llm_call(messages: list[ChatCompletionMessageParam]) -> str:
-    t0 = time.monotonic()
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=LLM_MAX_TOKENS,
-        messages=messages,
-        temperature=LLM_TEMPERATURE,
-    )
-    elapsed = time.monotonic() - t0
-
-    content = response.choices[0].message.content
-    if content is None:
-        raise ValueError("LLM returned empty content")
-
-    p = response.usage.prompt_tokens if response.usage else 0
-    c = response.usage.completion_tokens if response.usage else 0
-    t = response.usage.total_tokens if response.usage else 0
-    usage_tracker.record(p, c, t, elapsed)
-    usage_tracker.print_step(p, c, elapsed)
-
-    return content
-
-
 def trim_messages(
     messages: list[ChatCompletionMessageParam],
 ) -> list[ChatCompletionMessageParam]:
     max_len = PREAMBLE_SIZE + MAX_HISTORY_PAIRS * 2
     if len(messages) <= max_len:
         return messages
-    return messages[:PREAMBLE_SIZE] + messages[-(MAX_HISTORY_PAIRS * 2) :]
-
-
-def extract_command(text: str) -> str:
-    """Extract the shell command from an LLM reply.
-
-    Looks for a line starting with 'run:' (case-insensitive), after
-    stripping <think> blocks, markdown fences, and surrounding prose.
-    Returns the command string, or raises ValueError if not found.
-    """
-    text = text.strip()
-
-    # Strip <think>…</think> blocks (Qwen, DeepSeek, etc.)
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    if "</think>" in text:
-        text = text.split("</think>")[-1]
-    text = text.strip()
-
-    # Strip markdown fences if the whole response is wrapped
-    m = re.search(r"```(?:\w*)\s*(.*?)\s*```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
-
-    # Scan lines for 'run:' prefix
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("run:"):
-            command = stripped[4:].strip()
-            if command:
-                return command
-
-    raise ValueError(f"No 'run: <command>' line found in response")
+    return messages[:PREAMBLE_SIZE] + messages[-(MAX_HISTORY_PAIRS * 2):]
 
 
 # ── Agent loop ────────────────────────────────────────────
@@ -319,8 +268,52 @@ def extract_command(text: str) -> str:
 
 def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     agent_start = time.monotonic()
+
+    # ── Build context ──
+    ctx: dict[str, Any] = {
+        "cfg": cfg,
+        "task": task,
+        "model": MODEL,
+        "step": 0,
+        "screen_w": SCREEN_W,
+        "screen_h": SCREEN_H,
+        "extra_tools": [],
+        "extra_prompt": [],
+        "outcome": "unknown",
+        "result": None,
+        "wall_time_sec": 0,
+        # Swappable functions — plugins can replace these in on_startup
+        "llm_call": default_llm_call,
+        "screenshot_fn": default_screenshot,
+        "command_runner": default_command_runner,
+        "extract_command": default_extract_command,
+    }
+
+    # ── Load plugins ──
+    plugins = PluginHost()
+    loaded = plugins.load_directory(PLUGINS_DIR)
+    if loaded:
+        print(f"🔌 Plugins: {', '.join(loaded)}")
+
+    plugins.emit("on_startup", ctx)
+
     print(f"🤖 Task: {task}")
-    print(f"📁 Audit: {SESSION_DIR}")
+
+    # ── Build system prompt (after plugins had a chance to add tools) ──
+    system_prompt = build_system_prompt(ctx)
+
+    # ── Convenience wrappers for swappable functions ──
+    def llm_call(messages):
+        return ctx["llm_call"](ctx, messages)
+
+    def take_screenshot():
+        return ctx["screenshot_fn"](ctx)
+
+    def run_command(command):
+        return ctx["command_runner"](ctx, command)
+
+    def extract_command(text):
+        return ctx["extract_command"](ctx, text)
 
     # Remove stale calibration from previous sessions
     cal_file = cfg.get("calibration", "file")
@@ -328,19 +321,7 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         os.remove(cal_file)
         print(f"   Cleared old calibration: {cal_file}")
 
-    with open(os.path.join(SESSION_DIR, "metadata.json"), "w") as f:
-        json.dump(
-            {
-                "task": task,
-                "model": MODEL,
-                "started_at": datetime.now().isoformat(),
-                "screen": f"{SCREEN_W}x{SCREEN_H}",
-            },
-            f,
-            indent=2,
-        )
-
-    messages: list[ChatCompletionMessageParam] = [make_system_msg(SYSTEM_PROMPT)]
+    messages: list[ChatCompletionMessageParam] = [make_system_msg(system_prompt)]
     errors_in_a_row = 0
     step = 0
     task_done = False
@@ -348,22 +329,28 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
     # ── Step 0: calibration ──
     print("\n── Calibration ──")
+    plugins.emit("on_pre_screenshot", ctx)
     img_b64 = take_screenshot()
+    plugins.emit("on_post_screenshot", ctx, img_b64=img_b64)
     messages.append(make_user_msg(img_b64, CALIBRATION_PROMPT))
 
     try:
+        plugins.emit("on_pre_llm_call", ctx, messages=messages)
         reply = llm_call(messages)
+        usage = ctx.pop("_last_usage", {})
+        plugins.emit("on_post_llm_call", ctx, messages=messages, reply=reply, usage=usage)
         messages.append(make_assistant_msg(reply))
         print(f"   LLM → {reply[:200]}")
 
         command = extract_command(reply)
+        plugins.emit("on_pre_command", ctx, command=command)
         output = run_command(command)
+        plugins.emit("on_post_command", ctx, command=command, output=output)
         print(f"   Output: {output}")
         messages.append({"role": "user", "content": output})
 
     except Exception as e:
         print(f"   ⚠ Calibration failed: {e}, running identity calibration")
-        # Force identity calibration by clicking actual center
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
         output = run_command(f"cua-click {cx} {cy}")
         print(f"   Fallback: {output}")
@@ -378,14 +365,18 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
     # Reset context — drop calibration exchange so the model starts fresh
     # and doesn't treat the calibration click as the user's actual task.
-    messages = [make_system_msg(SYSTEM_PROMPT)]
+    messages = [make_system_msg(system_prompt)]
 
     # ── Main loop ──
     for step in range(max_steps):
+        ctx["step"] = step + 1
         print(f"\n── Step {step + 1} ──")
 
+        # ── Screenshot ──
         try:
+            plugins.emit("on_pre_screenshot", ctx)
             img_b64 = take_screenshot()
+            plugins.emit("on_post_screenshot", ctx, img_b64=img_b64)
         except Exception as e:
             print(f"   ⚠ Screenshot failed: {e}")
             time.sleep(1)
@@ -400,7 +391,10 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
         # ── LLM call ──
         try:
+            plugins.emit("on_pre_llm_call", ctx, messages=messages)
             reply = llm_call(messages)
+            usage = ctx.pop("_last_usage", {})
+            plugins.emit("on_post_llm_call", ctx, messages=messages, reply=reply, usage=usage)
         except Exception as e:
             print(f"   ⚠ API error: {e}")
             messages.pop()
@@ -433,16 +427,16 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             continue
 
         # ── Execute ──
+        plugins.emit("on_pre_command", ctx, command=command)
         output = run_command(command)
+        plugins.emit("on_post_command", ctx, command=command, output=output)
         print(f"   Output: {output[:300]}{'…' if len(output) > 300 else ''}")
 
         # ── Check for done marker ──
         if DONE_MARKER in output:
             task_done = True
-            # Parse the JSON payload after the marker
             marker_idx = output.index(DONE_MARKER) + len(DONE_MARKER)
             remainder = output[marker_idx:].strip()
-            # The next line should be JSON
             for line in remainder.splitlines():
                 line = line.strip()
                 if line.startswith("{"):
@@ -454,10 +448,13 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
             summary = done_payload.get("summary", "Task completed")
             result = done_payload.get("result")
+            ctx["result"] = result
 
             print(f"\n✅ Done: {summary}")
             if result:
                 print(f"   Result: {result}")
+
+            plugins.emit("on_task_complete", ctx, summary=summary, result=result)
             break
 
         # Feed output back
@@ -465,32 +462,13 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         time.sleep(POST_ACTION_DELAY)
         messages = trim_messages(messages)
 
-    # ── Summary ──
+    # ── Shutdown ──
     elapsed = time.monotonic() - agent_start
-    print("\n── Session Summary ──")
-    print(f"   Steps: {step + 1}")
-    print(f"   Wall time: {elapsed:.1f}s")
-    print(f"   LLM calls: {usage_tracker.llm_calls}")
-    print(f"   LLM time:  {usage_tracker.total_llm_time_sec:.1f}s")
-    print(
-        f"   Tokens: {usage_tracker.prompt_tokens} prompt"
-        f" + {usage_tracker.completion_tokens} completion"
-        f" = {usage_tracker.total_tokens} total"
-    )
-    print(f"   Avg throughput: {usage_tracker.tokens_per_sec():.1f} completion tok/s")
+    ctx["wall_time_sec"] = elapsed
+    ctx["step"] = step + 1
+    ctx["outcome"] = "completed" if task_done else "max_steps"
 
-    with open(os.path.join(SESSION_DIR, "metadata.json"), "r+") as f:
-        meta = json.load(f)
-        meta["finished_at"] = datetime.now().isoformat()
-        meta["steps"] = step + 1
-        meta["outcome"] = "completed" if task_done else "max_steps"
-        meta["wall_time_sec"] = round(elapsed, 2)
-        meta["usage"] = usage_tracker.info()
-        if done_payload.get("result") is not None:
-            meta["result"] = done_payload["result"]
-        f.seek(0)
-        json.dump(meta, f, indent=2)
-        f.truncate()
+    plugins.emit("on_shutdown", ctx)
 
     if not task_done:
         print("\n⚠ Reached max steps.")

@@ -20,18 +20,18 @@ app = typer.Typer(add_completion=False)
 # If a new tool is added to the directory but not here, it still shows
 # up under "Other tools" at the bottom.
 TOOL_ORDER = [
-    ("click", "Click / double-click / right-click at coordinates"),
-    ("type", "Type text via simulated keypresses"),
-    ("key", "Press a key or key combination"),
-    ("scroll", "Scroll at a screen position"),
-    ("drag", "Drag from one point to another"),
-    ("wait", "Wait (sleep) for a duration"),
-    ("screenshot", "Take a screenshot (base64 PNG to stdout)"),
-    ("done", "Signal task completion"),
-    ("help", "Show this help (you are here)"),
+    ("cua-click",      "Click / double-click / right-click at coordinates"),
+    ("cua-type",       "Type text via simulated keypresses"),
+    ("cua-key",        "Press a key or key combination"),
+    ("cua-scroll",     "Scroll at a screen position"),
+    ("cua-drag",       "Drag from one point to another"),
+    ("cua-wait",       "Wait (sleep) for a duration"),
+    ("cua-screenshot", "Take a screenshot (base64 PNG to stdout)"),
+    ("cua-done",       "Signal task completion"),
+    ("cua-help",       "Show this help (you are here)"),
 ]
 
-_SKIP = {"__pycache__", "help"}
+_SKIP = {"__pycache__", "cua-help"}
 
 
 def _tools_dir() -> str:
@@ -110,8 +110,8 @@ def cua_help(
     \b
     Examples:
       help            List all tools
-      help click      Show click usage
-      help done       Show done usage
+      help cua-click  Show click usage
+      help cua-done   Show done usage
     """
     if tool is None:
         _list_all()

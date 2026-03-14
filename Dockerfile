@@ -31,8 +31,11 @@ RUN pip install --break-system-packages -r /app/requirements.txt
 COPY start.sh /app/start.sh
 COPY agent.py /app/agent.py
 COPY cua_config.py /app/cua_config.py
+COPY plugin_host.py /app/plugin_host.py
+COPY tool_discovery.py /app/tool_discovery.py
 COPY config.ini /app/config.ini
 COPY tools /app/tools
+COPY plugins /app/plugins
 COPY example /app/example
 COPY calibration /app/calibration
 

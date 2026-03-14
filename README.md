@@ -25,6 +25,29 @@ The model writes natural prose and ends with a single `run: <command>`
 line.  The agent extracts that line, executes it in a shell, and feeds
 the output back.  No JSON wrapper — just a prefix convention.
 
+## Project Structure
+
+```
+agent.py             Main loop — screenshot → LLM → command
+cua_config.py        Shared configuration and calibration
+plugin_host.py       Plugin loader and hook dispatcher
+tool_discovery.py    Auto-discovers cua-* tools for the system prompt
+config.ini           Default settings (screen, mouse, LLM, etc.)
+start.sh             Container entrypoint (Xvfb, Chromium, VNC)
+run.sh               Build / run / stop helper (Docker + Podman)
+Dockerfile           Container image definition
+tools/               CLI tools the model invokes
+plugins/
+  bundled/
+    audit.py         Screenshot + metadata logging
+    usage_tracking.py Token counting and throughput stats
+  README.md          Plugin API reference
+calibration/
+  index.html         Calibration target page
+example/
+  index.html + .js   Interactive test page for agent validation
+```
+
 ## CLI Tools
 
 | Tool             | Purpose                                    |
@@ -41,6 +64,11 @@ the output back.  No JSON wrapper — just a prefix convention.
 Every tool uses [Typer](https://typer.tiangolo.com/) and has `--help`
 with full usage docs, reads defaults from `config.ini`, validates
 inputs, and gives actionable error messages.
+
+The system prompt is built dynamically at startup — the agent discovers
+all `cua-*` executables on `PATH`, runs `--help` on each, and includes
+their descriptions.  Drop a new tool in the `tools/` directory and it
+appears in the prompt automatically.
 
 ## Calibration
 
@@ -149,6 +177,8 @@ export them before running or create an `.env` file (see below):
 | `OPENAI_BASE_URL`  | `http://localhost:8000/v1`      | LLM endpoint                         |
 | `OPENAI_API_KEY`   | `not-needed`                    | API key                              |
 | `CUA_MODEL`        | `your-model-name`               | Model name                           |
+| `CUA_PLUGINS_DIR`  | *(none)*                        | Extra plugins dir (host path)        |
+| `CUA_AUDIT_DIR`    | `./audit`                       | Host path for audit data             |
 | `SCREEN_WIDTH`     | `1280`                          | Virtual screen width                 |
 | `SCREEN_HEIGHT`    | `800`                           | Virtual screen height                |
 | `SCREEN_DEPTH`     | `24`                            | Virtual screen color depth           |
@@ -225,6 +255,62 @@ open vnc://localhost:5900
 # Linux (e.g. with tigervnc)
 vncviewer localhost:5900
 ```
+
+## Plugins
+
+The agent has a lightweight plugin system.  Plugins are plain Python
+files dropped into the `plugins/` directory.  Each file can define
+hook functions (`on_startup`, `on_post_llm_call`, `on_shutdown`, etc.)
+that the agent calls at natural points in the loop.
+
+Two bundled plugins ship with the agent:
+
+- **`plugins/bundled/audit.py`** — Saves screenshots and session
+  metadata to `/app/audit`.  Delete to disable.
+- **`plugins/bundled/usage_tracking.py`** — Tracks token usage and
+  prints per-step and session-level stats.  Delete to silence.
+
+### Using external plugins
+
+Mount a directory of plugin files into the container:
+
+```bash
+CUA_PLUGINS_DIR=./my-plugins ./run.sh start --env-file .env
+```
+
+Or directly:
+
+```bash
+docker run -d --name cua \
+    -v ./my-plugins:/app/plugins/custom \
+    cua-agent
+```
+
+### Writing a plugin
+
+A plugin is a single `.py` file that defines one or more `on_*`
+functions.  Every hook receives a shared `ctx` dict as its first
+argument:
+
+```python
+# plugins/my_webhook.py
+
+import os, requests
+
+def on_startup(ctx):
+    ctx["webhook_url"] = os.environ.get("CUA_WEBHOOK")
+
+def on_task_complete(ctx, *, summary, result):
+    requests.post(ctx["webhook_url"], json={
+        "summary": summary,
+        "result": result,
+    })
+```
+
+Plugins can also replace core agent functions (LLM backend, screenshot
+method, command runner, command parser) by setting the corresponding
+key in `ctx` during `on_startup`.  See `plugins/README.md` for the
+full hook reference, `ctx` fields, and swappable function signatures.
 
 ## Example Test Page
 

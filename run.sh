@@ -22,6 +22,8 @@ set -euo pipefail
 IMAGE_NAME="${CUA_IMAGE:-cua-agent}"
 CONTAINER_NAME="${CUA_CONTAINER:-cua}"
 VNC_PORT="${CUA_VNC_PORT:-5900}"
+AUDIT_DIR="${CUA_AUDIT_DIR:-./audit}"
+EXTRA_PLUGINS_DIR="${CUA_PLUGINS_DIR:-}"
 
 # ── Detect runtime ────────────────────────────────────────
 detect_runtime() {
@@ -53,6 +55,17 @@ host_access_flags() {
     fi
 }
 
+# ── Volume mounts ─────────────────────────────────────────
+# Persist audit data and allow external plugins.
+volume_flags() {
+    mkdir -p "${AUDIT_DIR}"
+    local flags="-v $(cd "${AUDIT_DIR}" && pwd):/app/audit:z"
+    if [ -n "${EXTRA_PLUGINS_DIR}" ] && [ -d "${EXTRA_PLUGINS_DIR}" ]; then
+        flags="${flags} -v $(cd "${EXTRA_PLUGINS_DIR}" && pwd):/app/plugins/custom:z"
+    fi
+    echo "${flags}"
+}
+
 # ── Commands ──────────────────────────────────────────────
 
 cmd_build() {
@@ -66,8 +79,8 @@ cmd_start() {
     $RUNTIME run -d \
         --name "${CONTAINER_NAME}" \
         $(host_access_flags) \
+        $(volume_flags) \
         -p "${VNC_PORT}:5900" \
-        -v "${CUA_AUDIT_DIR:-./audit}:/app/audit:z" \
         "$@" \
         "${IMAGE_NAME}"
     echo ""
@@ -91,8 +104,8 @@ cmd_agent() {
         $RUNTIME run --rm \
             --name "${CONTAINER_NAME}-run" \
             $(host_access_flags) \
+            $(volume_flags) \
             -p "${VNC_PORT}:5900" \
-            -v "${CUA_AUDIT_DIR:-./audit}:/app/audit:z" \
             "$@" \
             "${IMAGE_NAME}" agent "${task}"
     fi
@@ -133,6 +146,8 @@ Environment variables:
   CUA_IMAGE          Image name         (default: cua-agent)
   CUA_CONTAINER      Container name     (default: cua)
   CUA_VNC_PORT       Host VNC port      (default: 5900)
+  CUA_AUDIT_DIR      Host audit path    (default: ./audit)
+  CUA_PLUGINS_DIR    Extra plugins dir  (mounted to /app/plugins/custom)
   OPENAI_BASE_URL    LLM endpoint       (pass via -e or .env file)
   OPENAI_API_KEY     API key            (pass via -e or .env file)
   CUA_MODEL          Model name         (pass via -e or .env file)
