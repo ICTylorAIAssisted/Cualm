@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Receive the next message from the phone user.
+
+Reads (and removes) the oldest queued message from the daemon's inbox.
+
+Examples:
+    cua-xmpp-recv                   # pop next message, or report empty
+    cua-xmpp-recv --wait 30         # block up to 30s for a message
+    cua-xmpp-recv --peek            # read without removing
+    cua-xmpp-recv --all             # drain all pending messages
+"""
+
+import json
+import time
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from xmpp_tools.config import (
+    INBOX_DIR,
+    MSG_EMPTY_MARKER,
+    MSG_RECEIVED_MARKER,
+    ensure_dirs,
+)
+
+app = typer.Typer(add_completion=False)
+
+
+def _oldest_message() -> Optional[Path]:
+    """Return the oldest .json file in the inbox, or None."""
+    files = sorted(INBOX_DIR.glob("*.json"))
+    return files[0] if files else None
+
+
+def _read_message(path: Path, delete: bool = True) -> dict:
+    """Read a message file and optionally delete it."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if delete:
+        path.unlink()
+    return data
+
+
+@app.command()
+def xmpp_recv(
+    wait: int = typer.Option(
+        0,
+        "--wait",
+        "-w",
+        help="Seconds to wait for a message (0 = don't wait)",
+    ),
+    peek: bool = typer.Option(
+        False,
+        "--peek",
+        "-p",
+        help="Read without removing the message from the inbox",
+    ),
+    all_messages: bool = typer.Option(
+        False,
+        "--all",
+        "-a",
+        help="Drain and return all pending messages",
+    ),
+) -> None:
+    """Receive the next XMPP message.
+
+    \b
+    Returns the oldest queued message as structured JSON.
+    If no message is available and --wait is not set,
+    emits the INBOX_EMPTY marker instead.
+
+    \b
+    Examples:
+      cua-xmpp-recv                  # instant check
+      cua-xmpp-recv --wait 60        # block up to 60s
+      cua-xmpp-recv --peek           # look without consuming
+      cua-xmpp-recv --all            # get everything pending
+    """
+    ensure_dirs()
+
+    if all_messages:
+        _drain_all(peek)
+        return
+
+    # Try to get a message, optionally waiting
+    deadline = time.time() + wait
+    msg_path = _oldest_message()
+
+    while msg_path is None and time.time() < deadline:
+        time.sleep(0.5)
+        msg_path = _oldest_message()
+
+    if msg_path is None:
+        typer.echo(MSG_EMPTY_MARKER)
+        typer.echo(json.dumps({"pending": 0}))
+        return
+
+    data = _read_message(msg_path, delete=not peek)
+    typer.echo(MSG_RECEIVED_MARKER)
+    typer.echo(json.dumps(data))
+
+
+def _drain_all(peek: bool) -> None:
+    """Return every pending message in one shot."""
+    messages = []
+    for p in sorted(INBOX_DIR.glob("*.json")):
+        messages.append(_read_message(p, delete=not peek))
+
+    if not messages:
+        typer.echo(MSG_EMPTY_MARKER)
+        typer.echo(json.dumps({"pending": 0}))
+        return
+
+    typer.echo(MSG_RECEIVED_MARKER)
+    typer.echo(json.dumps({"count": len(messages), "messages": messages}))
+
+
+if __name__ == "__main__":
+    app()

@@ -1,7 +1,12 @@
 # CUA Plugins
 
-Drop Python files into this directory (or any subdirectory) to extend
-the agent.  Each `.py` file is loaded automatically at startup.
+Drop Python files into this directory to extend the agent.  Plugins
+come in two forms:
+
+1. **Flat files** — `plugins/my_webhook.py` is loaded directly.
+2. **Directory plugins** — `plugins/xmpp/plugin.py` is loaded as
+   the entry point.  The directory is added to `sys.path` so the
+   plugin can import its own subpackages.
 
 ## How it works
 
@@ -116,27 +121,50 @@ def on_startup(ctx):
 
 ## Bundled plugins
 
-The `bundled/` subdirectory ships with the agent:
+These ship with the agent as top-level files:
 
 - **audit.py** — Saves screenshots and session metadata to disk.
   Delete to disable audit logging.
 - **usage_tracking.py** — Tracks token usage and prints per-step and
   session-level stats.  Delete to silence token logging.
 
+The `xmpp/` directory plugin adds XMPP messaging:
+
+- **xmpp/** — Enables the agent to send/receive messages via XMPP.
+  Includes a background daemon and CLI tools (`cua-xmpp-send`,
+  `cua-xmpp-recv`, `cua-xmpp-wait`, etc.).  See `xmpp/README.md`.
+
 ## Directory structure
 
 ```
 plugins/
-  README.md           ← this file
-  bundled/
-    audit.py          ← ships with agent
-    usage_tracking.py ← ships with agent
-  my_webhook.py       ← your plugin (gitignored)
-  my_mcp_bridge.py    ← your plugin (gitignored)
+  README.md                ← this file
+  audit.py                 ← bundled: screenshot + metadata logging
+  usage_tracking.py        ← bundled: token counting
+  xmpp/                    ← directory plugin
+    plugin.py              ← entry point (loaded by plugin host)
+    requirements.txt       ← plugin dependencies
+    xmpp_tools/            ← shared config module
+    tools/                 ← CLI tools (the actual implementations)
+      cua-xmpp-send
+      cua-xmpp-recv
+      ...
+  my_webhook.py            ← your flat-file plugin (gitignored)
 ```
 
-Or mount external plugins at runtime:
+### Directory plugin layout
 
-```bash
-docker run -v ./my-plugins:/app/plugins/custom ...
+A directory plugin must contain a `plugin.py` file — that's the only
+requirement.  Everything else is up to you:
+
 ```
+plugins/my_integration/
+  plugin.py                ← required — defines on_startup, on_shutdown, etc.
+  requirements.txt         ← optional — installed at build time
+  tools/                   ← optional — CLI tools (added to PATH in on_startup)
+  my_package/              ← optional — internal libraries
+```
+
+The plugin host adds the directory itself to `sys.path` before loading
+`plugin.py`, so `from my_package import foo` works without any path
+manipulation.

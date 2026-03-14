@@ -1,0 +1,23 @@
+# CUA Agent — base compose file
+#
+# This runs the agent by itself.  Drop-in extensions live in compose.d/
+# and are discovered automatically by run.sh.
+#
+# Usage:
+#   ./run.sh up                    # starts agent + any compose.d/ extensions
+#   ./run.sh agent "your task"
+#   ./run.sh down
+
+services:
+  cua:
+    build: .
+    container_name: cua
+    environment:
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:8000/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-not-needed}
+      CUA_MODEL: ${CUA_MODEL:-your-model-name}
+    ports:
+      - "${CUA_VNC_PORT:-5900}:5900"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Stop the XMPP daemon.
+
+Examples:
+    cua-xmpp-stop
+    cua-xmpp-stop --force
+"""
+
+import json
+import os
+import signal
+import time
+
+import typer
+
+from xmpp_tools.config import DAEMON_STATUS_MARKER, PID_FILE, STATUS_FILE, ensure_dirs
+
+app = typer.Typer(add_completion=False)
+
+
+@app.command()
+def xmpp_stop(
+    force: bool = typer.Option(False, "--force", "-f", help="Send SIGKILL instead of SIGTERM"),
+) -> None:
+    """Stop the XMPP daemon.
+
+    \b
+    Examples:
+      cua-xmpp-stop
+      cua-xmpp-stop --force
+    """
+    ensure_dirs()
+
+    if not PID_FILE.exists():
+        typer.echo(DAEMON_STATUS_MARKER)
+        typer.echo(json.dumps({"stopped": True, "reason": "no pid file"}))
+        return
+
+    try:
+        pid = int(PID_FILE.read_text().strip())
+    except (ValueError, OSError):
+        typer.echo(DAEMON_STATUS_MARKER)
+        typer.echo(json.dumps({"stopped": True, "reason": "invalid pid file"}))
+        PID_FILE.unlink(missing_ok=True)
+        return
+
+    sig = signal.SIGKILL if force else signal.SIGTERM
+
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        typer.echo(DAEMON_STATUS_MARKER)
+        typer.echo(json.dumps({"stopped": True, "reason": "process already dead"}))
+        PID_FILE.unlink(missing_ok=True)
+        STATUS_FILE.unlink(missing_ok=True)
+        return
+
+    # Wait up to 5s for it to die
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.1)
+        except ProcessLookupError:
+            break
+
+    PID_FILE.unlink(missing_ok=True)
+    STATUS_FILE.unlink(missing_ok=True)
+
+    typer.echo(DAEMON_STATUS_MARKER)
+    typer.echo(json.dumps({"stopped": True, "pid": pid, "signal": sig.name}))
+
+
+if __name__ == "__main__":
+    app()

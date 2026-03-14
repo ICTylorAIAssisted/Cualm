@@ -1,7 +1,15 @@
 """Plugin loader and hook dispatcher.
 
-Scans a directory for Python files, imports each, and dispatches
-hook calls to any module that defines a matching function.
+Scans a plugin directory and loads plugins in two forms:
+
+1. **Flat files** — ``plugins/my_plugin.py`` is loaded directly.
+2. **Directory plugins** — ``plugins/xmpp/plugin.py`` is loaded as the
+   entry point.  The directory is added to ``sys.path`` so the plugin
+   can import its own subpackages (e.g. ``from xmpp_tools import …``).
+
+Only files/dirs at the top level of the plugins directory are
+considered — the loader never recurses into subdirectories looking
+for additional plugin entry points.
 
 Hooks are plain functions whose names start with ``on_``.  A plugin
 only needs to define the hooks it cares about — everything else is
@@ -14,44 +22,76 @@ during ``on_startup``.
 """
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
 
 class PluginHost:
-    """Load plugins from a directory tree and dispatch hooks."""
+    """Load plugins from a directory and dispatch hooks."""
 
     def __init__(self) -> None:
         self._plugins: list[Any] = []  # loaded modules
 
     def load_directory(self, path: str) -> list[str]:
-        """Import all .py files under *path* (recursive).
+        """Discover and import plugins under *path*.
 
-        Returns the list of loaded module names.
+        Supports two layouts:
+        - ``path/foo.py``         → loaded as plugin ``foo``
+        - ``path/bar/plugin.py``  → loaded as plugin ``bar``
+          (``path/bar/`` is added to sys.path so it can import
+          its own packages)
+
+        Returns the list of loaded plugin names.
         """
         root = Path(path)
         if not root.is_dir():
             return []
 
         loaded: list[str] = []
-        for py_file in sorted(root.rglob("*.py")):
-            if py_file.name.startswith("_"):
+
+        for entry in sorted(root.iterdir()):
+            # Skip hidden and dunder entries
+            if entry.name.startswith((".", "_")):
                 continue
-            mod_name = f"cua_plugin.{py_file.stem}"
-            try:
-                spec = importlib.util.spec_from_file_location(mod_name, py_file)
-                if spec is None or spec.loader is None:
-                    continue
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[mod_name] = mod
-                spec.loader.exec_module(mod)
-                self._plugins.append(mod)
-                loaded.append(py_file.stem)
-            except Exception as e:
-                print(f"   ⚠ Failed to load plugin {py_file.name}: {e}")
+
+            if entry.is_file() and entry.suffix == ".py":
+                # Flat file plugin
+                name = entry.stem
+                mod = self._load_file(name, entry)
+                if mod is not None:
+                    loaded.append(name)
+
+            elif entry.is_dir():
+                plugin_py = entry / "plugin.py"
+                if plugin_py.is_file():
+                    # Directory plugin — add dir to sys.path for
+                    # subpackage imports, then load plugin.py
+                    dir_str = str(entry)
+                    if dir_str not in sys.path:
+                        sys.path.insert(0, dir_str)
+                    name = entry.name
+                    mod = self._load_file(name, plugin_py)
+                    if mod is not None:
+                        loaded.append(name)
+
         return loaded
+
+    def _load_file(self, name: str, path: Path) -> Any:
+        """Import a single Python file as a plugin module."""
+        mod_name = f"cua_plugin.{name}"
+        try:
+            spec = importlib.util.spec_from_file_location(mod_name, path)
+            if spec is None or spec.loader is None:
+                return None
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = mod
+            spec.loader.exec_module(mod)
+            self._plugins.append(mod)
+            return mod
+        except Exception as e:
+            print(f"   ⚠ Failed to load plugin {name} ({path.name}): {e}")
+            return None
 
     def emit(self, hook: str, ctx: dict, **kwargs: Any) -> None:
         """Call *hook* on every plugin that defines it.

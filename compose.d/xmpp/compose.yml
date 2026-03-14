@@ -1,0 +1,46 @@
+# XMPP extension — adds Prosody server and configures the agent
+#
+# This file is auto-discovered by run.sh when placed in compose.d/.
+# It merges with the base docker-compose.yml.
+#
+# Phone user connects to:
+#   JID:      user@cua.local
+#   Password: user-secret  (override via XMPP_HUMAN_PASSWORD)
+#   Server:   <your-host-ip>:5222
+
+services:
+  prosody:
+    build: ./compose.d/xmpp/prosody
+    container_name: cua-prosody
+    hostname: cua.local
+    environment:
+      XMPP_DOMAIN: cua.local
+      XMPP_AGENT_USER: agent
+      XMPP_AGENT_PASSWORD: ${XMPP_AGENT_PASSWORD:-agent-secret}
+      XMPP_HUMAN_USER: user
+      XMPP_HUMAN_PASSWORD: ${XMPP_HUMAN_PASSWORD:-user-secret}
+    ports:
+      - "5222:5222"
+      - "5280:5280"
+    volumes:
+      - prosody-data:/var/lib/prosody
+    restart: unless-stopped
+
+  # Extend the base cua service with XMPP configuration
+  cua:
+    depends_on:
+      - prosody
+    environment:
+      XMPP_JID: agent@cua.local
+      XMPP_PASSWORD: ${XMPP_AGENT_PASSWORD:-agent-secret}
+      XMPP_PEER_JID: user@cua.local
+      XMPP_HOST: prosody
+      XMPP_PORT: "5222"
+      XMPP_VERIFY_CERT: "false"
+      XMPP_AUTO_START: "true"
+    volumes:
+      - xmpp-spool:/var/xmpp
+
+volumes:
+  prosody-data:
+  xmpp-spool:

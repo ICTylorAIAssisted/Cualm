@@ -34,14 +34,19 @@ plugin_host.py       Plugin loader and hook dispatcher
 tool_discovery.py    Auto-discovers cua-* tools for the system prompt
 config.ini           Default settings (screen, mouse, LLM, etc.)
 start.sh             Container entrypoint (Xvfb, Chromium, VNC)
-run.sh               Build / run / stop helper (Docker + Podman)
+run.sh               Build / run / stop helper (Compose + extensions)
 Dockerfile           Container image definition
+docker-compose.yml   Base compose file (agent only)
 tools/               CLI tools the model invokes
 plugins/
-  bundled/
-    audit.py         Screenshot + metadata logging
-    usage_tracking.py Token counting and throughput stats
+  audit.py           Screenshot + metadata logging
+  usage_tracking.py  Token counting and throughput stats
+  xmpp/              XMPP messaging (directory plugin)
   README.md          Plugin API reference
+compose.d/
+  audit/              Audit volume mount (pairs with plugins/audit.py)
+  xmpp/              Prosody XMPP server (compose extension)
+  README.md          Compose extension reference
 calibration/
   index.html         Calibration target page
 example/
@@ -149,22 +154,27 @@ Truncated stdout. Showing only first 5000 bytes. Full output stored in /tmp/cua_
 
 ## Quick Start (Docker / Podman)
 
-The recommended way to run the agent is with Docker or Podman.  A
-helper script is provided that works with both:
+The agent runs via Docker or Podman Compose.  A helper script detects
+which is available and handles everything:
 
 ```bash
-# Build the image
-./run.sh build
+# Build and start
+./run.sh up
 
-# Start an interactive container (VNC on port 5900)
-./run.sh start
-
-# Run the agent with a task directly
+# Run the agent with a task
 ./run.sh agent "Open Chromium and go to wikipedia.org"
 
-# Stop the container
-./run.sh stop
+# Watch the desktop via VNC
+open vnc://localhost:5900    # macOS
+vncviewer localhost:5900     # Linux
+
+# Stop everything
+./run.sh down
 ```
+
+Any compose extensions in `compose.d/` are auto-discovered and merged.
+For example, the bundled XMPP extension adds a Prosody server
+automatically.  See `compose.d/README.md` for details.
 
 ### Environment Variables
 
@@ -177,7 +187,6 @@ export them before running or create an `.env` file (see below):
 | `OPENAI_BASE_URL`  | `http://localhost:8000/v1`      | LLM endpoint                         |
 | `OPENAI_API_KEY`   | `not-needed`                    | API key                              |
 | `CUA_MODEL`        | `your-model-name`               | Model name                           |
-| `CUA_PLUGINS_DIR`  | *(none)*                        | Extra plugins dir (host path)        |
 | `CUA_AUDIT_DIR`    | `./audit`                       | Host path for audit data             |
 | `SCREEN_WIDTH`     | `1280`                          | Virtual screen width                 |
 | `SCREEN_HEIGHT`    | `800`                           | Virtual screen height                |
@@ -197,64 +206,31 @@ CUA_MODEL=qwen2.5-vl
 Then run:
 
 ```bash
-./run.sh start --env-file .env
+./run.sh up --env-file .env
 ```
 
 ### Accessing a Local Server from Inside the Container
 
-If you serve the example test page (or any other site) from your host
-machine, the container needs to reach `localhost` on the host.  Both
-Docker and Podman support `host.docker.internal` for this, but the
-setup differs slightly:
+The base compose file maps `host.docker.internal` automatically, so
+the agent can reach services on your host machine:
 
-**Docker (Linux):**
 ```bash
-# Serve the example page on port 8080
+# Serve the example page on your host
 cd example && python3 -m http.server 8080 &
 
-# Start the container with host access
-docker run -d --name cua \
-    --add-host=host.docker.internal:host-gateway \
-    -p 5900:5900 \
-    -e OPENAI_BASE_URL=http://host.docker.internal:1234/v1 \
-    cua-agent
-
-# Then tell the agent to open the page
-docker exec cua /app/agent.py \
-    "Open http://host.docker.internal:8080 in Chromium"
+# Point the agent at it
+./run.sh agent "Open http://host.docker.internal:8080 in Chromium"
 ```
 
-Docker Desktop (macOS / Windows) resolves `host.docker.internal`
-automatically — you do not need `--add-host`.
-
-**Podman:**
-```bash
-podman run -d --name cua \
-    --network slirp4netns:allow_host_loopback=true \
-    -p 5900:5900 \
-    -e OPENAI_BASE_URL=http://host.containers.internal:1234/v1 \
-    cua-agent
-```
-
-Podman uses `host.containers.internal` by default (available since
-Podman 4.5).  If you prefer the Docker-compatible alias you can add
-`--add-host=host.docker.internal:host-gateway`.
-
-The `run.sh` helper script handles these differences automatically —
-see `./run.sh --help` for details.
-
-### VNC Debugging
-
-The container exposes a VNC server on port `5900`.  Connect with any
-VNC client to watch the agent interact with the desktop in real time:
+Set `OPENAI_BASE_URL` to a host-local LLM the same way:
 
 ```bash
-# macOS
-open vnc://localhost:5900
-
-# Linux (e.g. with tigervnc)
-vncviewer localhost:5900
+OPENAI_BASE_URL=http://host.docker.internal:1234/v1
 ```
+
+Docker Desktop (macOS/Windows) resolves `host.docker.internal`
+natively.  On Linux, the compose file adds `host-gateway` mapping.
+For Podman, `host.containers.internal` works natively.
 
 ## Plugins
 
@@ -265,25 +241,29 @@ that the agent calls at natural points in the loop.
 
 Two bundled plugins ship with the agent:
 
-- **`plugins/bundled/audit.py`** — Saves screenshots and session
+- **`plugins/audit.py`** — Saves screenshots and session
   metadata to `/app/audit`.  Delete to disable.
-- **`plugins/bundled/usage_tracking.py`** — Tracks token usage and
+- **`plugins/usage_tracking.py`** — Tracks token usage and
   prints per-step and session-level stats.  Delete to silence.
+
+An XMPP messaging plugin is also included:
+
+- **`plugins/xmpp/`** — Enables the agent to exchange messages with
+  a human user via XMPP.  See `plugins/xmpp/README.md`.  The
+  matching compose extension (`compose.d/xmpp/`) provides the
+  Prosody server — `./run.sh up` starts both automatically.
 
 ### Using external plugins
 
-Mount a directory of plugin files into the container:
+Place plugin files directly in `plugins/`, or mount a directory via
+a compose override:
 
-```bash
-CUA_PLUGINS_DIR=./my-plugins ./run.sh start --env-file .env
-```
-
-Or directly:
-
-```bash
-docker run -d --name cua \
-    -v ./my-plugins:/app/plugins/custom \
-    cua-agent
+```yaml
+# compose.d/my-plugins/compose.yml
+services:
+  cua:
+    volumes:
+      - ./my-plugins:/app/plugins/custom
 ```
 
 ### Writing a plugin

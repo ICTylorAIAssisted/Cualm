@@ -41,7 +41,12 @@ COPY calibration /app/calibration
 
 RUN chmod +x /app/tools/* && \
     chmod +x /app/agent.py && \
-    chmod +x /app/start.sh
+    chmod +x /app/start.sh && \
+    find /app/plugins -path '*/tools/cua-*' -exec chmod +x {} +
+
+# Install plugin requirements (if any)
+RUN find /app/plugins -name 'requirements.txt' -exec \
+    pip install --break-system-packages -q -r {} \;
 
 # Tools import cua_config as a module — make sure /app is on PYTHONPATH
 ENV PYTHONPATH="/app:${PYTHONPATH}"

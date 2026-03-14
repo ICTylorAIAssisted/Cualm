@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Block until a message arrives from the phone user, then return it.
+
+This is the primary tool for agent loops.  Unlike `cua-xmpp-recv --wait`,
+this command is designed for long waits: it prints a heartbeat every
+interval so the agent loop knows it hasn't hung, and it returns the
+*parsed* message fields as separate marker lines for easy extraction.
+
+Examples:
+    cua-xmpp-wait                       # wait forever
+    cua-xmpp-wait --timeout 300         # wait up to 5 minutes
+    cua-xmpp-wait --timeout 60 --or-empty  # return empty after 60s instead of error
+"""
+
+import json
+import time
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from xmpp_tools.config import (
+    INBOX_DIR,
+    MSG_EMPTY_MARKER,
+    MSG_RECEIVED_MARKER,
+    STATUS_FILE,
+    WAITING_MARKER,
+    ensure_dirs,
+)
+
+app = typer.Typer(add_completion=False)
+
+
+def _oldest_message() -> Optional[Path]:
+    files = sorted(INBOX_DIR.glob("*.json"))
+    return files[0] if files else None
+
+
+def _daemon_alive() -> bool:
+    """Quick check that the daemon status file says connected."""
+    try:
+        data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        return data.get("state") == "connected"
+    except Exception:
+        return False
+
+
+@app.command()
+def xmpp_wait(
+    timeout: int = typer.Option(
+        0,
+        "--timeout",
+        "-t",
+        help="Max seconds to wait (0 = wait forever)",
+    ),
+    or_empty: bool = typer.Option(
+        False,
+        "--or-empty",
+        help="On timeout, return INBOX_EMPTY instead of exit code 1",
+    ),
+    heartbeat: int = typer.Option(
+        15,
+        "--heartbeat",
+        "-b",
+        help="Seconds between heartbeat lines (0 = no heartbeat)",
+    ),
+) -> None:
+    """Block until a message arrives from the phone user.
+
+    \b
+    Designed for agent loops that need to park and wait for human
+    input.  Prints periodic heartbeat lines so the caller knows the
+    process is alive.
+
+    \b
+    Exit codes:
+      0  — message received (JSON on stdout after marker)
+      1  — timeout with no message (unless --or-empty)
+
+    \b
+    Examples:
+      cua-xmpp-wait                          # wait indefinitely
+      cua-xmpp-wait --timeout 120            # 2 min cap
+      cua-xmpp-wait -t 60 --or-empty         # soft timeout
+      cua-xmpp-wait --heartbeat 30           # slower heartbeat
+    """
+    ensure_dirs()
+
+    deadline = (time.time() + timeout) if timeout > 0 else None
+    last_heartbeat = 0
+    waited = 0
+
+    while True:
+        # Check inbox
+        msg_path = _oldest_message()
+        if msg_path is not None:
+            try:
+                data = json.loads(msg_path.read_text(encoding="utf-8"))
+                msg_path.unlink()
+                typer.echo(MSG_RECEIVED_MARKER)
+                typer.echo(json.dumps(data))
+                return
+            except Exception as e:
+                typer.echo(f"Error reading message: {e}", err=True)
+                msg_path.rename(msg_path.with_suffix(".err"))
+
+        # Check timeout
+        if deadline and time.time() >= deadline:
+            if or_empty:
+                typer.echo(MSG_EMPTY_MARKER)
+                typer.echo(json.dumps({"pending": 0, "reason": "timeout"}))
+                return
+            else:
+                typer.echo(MSG_EMPTY_MARKER)
+                typer.echo(json.dumps({"pending": 0, "reason": "timeout"}))
+                raise SystemExit(1)
+
+        # Heartbeat
+        now = time.time()
+        if heartbeat > 0 and (now - last_heartbeat) >= heartbeat:
+            daemon_ok = _daemon_alive()
+            info = {
+                "waited": int(waited),
+                "daemon": "connected" if daemon_ok else "unknown",
+            }
+            if deadline:
+                info["remaining"] = max(0, int(deadline - now))
+            typer.echo(WAITING_MARKER)
+            typer.echo(json.dumps(info))
+            last_heartbeat = now
+
+        time.sleep(0.5)
+        waited += 0.5
+
+
+if __name__ == "__main__":
+    app()
