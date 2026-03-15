@@ -32,7 +32,15 @@ echo "==> Ensuring accounts exist"
 prosodyctl register "$AGENT_USER" "$DOMAIN" "$AGENT_PASS" 2>/dev/null || true
 prosodyctl register "$HUMAN_USER" "$DOMAIN" "$HUMAN_PASS" 2>/dev/null || true
 
-echo "==> Accounts ready: ${AGENT_USER}@${DOMAIN}, ${HUMAN_USER}@${DOMAIN}"
+# Register orchestrator account if configured
+ORCH_USER="${XMPP_ORCH_USER:-}"
+ORCH_PASS="${XMPP_ORCH_PASSWORD:-}"
+if [ -n "$ORCH_USER" ] && [ -n "$ORCH_PASS" ]; then
+    prosodyctl register "$ORCH_USER" "$DOMAIN" "$ORCH_PASS" 2>/dev/null || true
+    echo "==> Accounts ready: ${AGENT_USER}@${DOMAIN}, ${HUMAN_USER}@${DOMAIN}, ${ORCH_USER}@${DOMAIN}"
+else
+    echo "==> Accounts ready: ${AGENT_USER}@${DOMAIN}, ${HUMAN_USER}@${DOMAIN}"
+fi
 
 # ── Start Prosody in foreground ──────────────────────────────
 echo "==> Starting Prosody"

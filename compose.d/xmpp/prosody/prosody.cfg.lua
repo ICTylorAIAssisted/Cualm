@@ -11,7 +11,6 @@ modules_enabled = {
     "roster";
     "saslauth";
     "tls";
-    "dialback";
     "disco";
     "carbons";
     "pep";
@@ -35,8 +34,12 @@ modules_enabled = {
 }
 
 modules_disabled = {
-    "s2s";  -- no federation needed
+    "s2s";    -- no federation needed
+    "posix";  -- breaks in containers (PID/daemonize not needed with -F)
 }
+
+-- Running in a container — don't try to daemonize
+daemonize = false
 
 -- Disable open registration
 allow_registration = false
@@ -48,6 +51,10 @@ authentication = "internal_hashed"
 -- The CUA connects internally and can skip verification.
 -- The phone client will prompt to trust on first connect.
 c2s_require_encryption = true
+
+-- Listen on all interfaces (important in containers)
+c2s_interfaces = { "*" }
+c2s_ports = { 5222 }
 
 -- Message archiving — so the phone gets messages sent while it was offline
 archive_expires_after = "1w"

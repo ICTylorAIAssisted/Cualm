@@ -39,6 +39,34 @@ if [ -z "$COMPOSE" ]; then
     exit 1
 fi
 
+# ── Detect container runtime socket ──────────────────────
+# Needed by the orchestrator to spawn sibling containers.
+# Export so compose can use it in volume mounts.
+if [ -z "${CUA_RUNTIME_SOCKET:-}" ]; then
+    # Check DOCKER_HOST first (e.g. unix:///run/user/1000/podman/podman.sock)
+    if [ -n "${DOCKER_HOST:-}" ]; then
+        _from_host="${DOCKER_HOST#unix://}"
+        if [ -S "$_from_host" ]; then
+            export CUA_RUNTIME_SOCKET="$_from_host"
+        fi
+    fi
+
+    # Fall back to probing common paths
+    if [ -z "${CUA_RUNTIME_SOCKET:-}" ]; then
+        for _sock in \
+            "/var/run/docker.sock" \
+            "/run/podman/podman.sock" \
+            "/run/user/$(id -u)/podman/podman.sock"; do
+            if [ -S "$_sock" ]; then
+                export CUA_RUNTIME_SOCKET="$_sock"
+                break
+            fi
+        done
+    fi
+fi
+# Fall back if nothing found (compose will error clearly on mount)
+export CUA_RUNTIME_SOCKET="${CUA_RUNTIME_SOCKET:-/var/run/docker.sock}"
+
 # ── Collect compose files ─────────────────────────────────
 # Base file + all compose.d/*/compose.yml fragments.
 # Directories starting with '.' are skipped (easy disable).

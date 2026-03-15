@@ -79,6 +79,26 @@ compose.d/xmpp/
     entrypoint.sh       Cert generation + account creation
 ```
 
+### orchestrator/
+
+Adds an XMPP-driven task orchestrator.  The user messages
+`orchestrator@cua.local` from their phone, and each message
+spawns a fresh agent container.  Results are sent back when done.
+
+Requires the `xmpp/` extension for Prosody.
+
+```
+compose.d/orchestrator/
+  compose.yml            Orchestrator service + prosody account
+  orchestrator/
+    Dockerfile           Slim Python image
+    main.py              XMPP bot + Docker container spawner
+```
+
+When enabled, the orchestrator disables the XMPP daemon on the
+base `cua` service (sets `XMPP_AUTO_START=false`) since the
+orchestrator handles all messaging.
+
 ## Relationship to Python plugins
 
 Compose extensions and Python plugins are complementary:

@@ -46,6 +46,7 @@ plugins/
 compose.d/
   audit/              Audit volume mount (pairs with plugins/audit.py)
   xmpp/              Prosody XMPP server (compose extension)
+  orchestrator/      XMPP-driven task spawner (per-task containers)
   README.md          Compose extension reference
 calibration/
   index.html         Calibration target page
