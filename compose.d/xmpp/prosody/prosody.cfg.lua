@@ -65,6 +65,10 @@ http_ports = { 5280 }
 http_interfaces = { "*" }
 https_ports = {}  -- disable HTTPS port; TLS handled by XMPP layer or reverse proxy
 
+-- Accept HTTP requests regardless of Host header.
+-- Phones will connect via the host's IP address, not cua.local.
+http_default_host = "cua.local"
+
 -- Limits
 limits = {
     c2s = { rate = "10kb/s"; burst = "50kb" };

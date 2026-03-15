@@ -13,6 +13,11 @@ services:
     build: ./compose.d/xmpp/prosody
     container_name: cua-prosody
     hostname: cua.local
+    networks:
+      default:
+        aliases:
+          - cua.local
+          - upload.cua.local
     environment:
       XMPP_DOMAIN: cua.local
       XMPP_AGENT_USER: agent

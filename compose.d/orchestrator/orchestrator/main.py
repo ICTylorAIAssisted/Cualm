@@ -12,6 +12,7 @@ Presence indicates state:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -36,6 +37,14 @@ XMPP_VERIFY_CERT = os.environ.get("ORCH_XMPP_VERIFY_CERT", "false").lower() == "
 
 # Who is allowed to send tasks
 ALLOWED_USER = os.environ.get("ORCH_ALLOWED_USER", "user@cua.local")
+
+# External host:port for rewriting file upload URLs so phones can reach them.
+# Prosody generates internal URLs like http://cua.local:5280/file_share/...
+# which aren't reachable from outside. This rewrites them to use the host IP.
+# e.g. "192.168.50.198:5280" (host:port only, no http://)
+_raw_host = os.environ.get("ORCH_HTTP_HOST", "")
+# Strip scheme if accidentally included
+HTTP_EXTERNAL_HOST = _raw_host.replace("http://", "").replace("https://", "").rstrip("/")
 
 # Docker / agent settings
 AGENT_IMAGE = os.environ.get("CUA_AGENT_IMAGE", "cua-agent")
@@ -144,6 +153,84 @@ def detect_host_ip() -> str:
 
     log.warning("Could not detect host IP — using 'host-gateway' (may not work)")
     return "host-gateway"
+
+
+# ── Screenshot & upload helpers ──────────────────────────────
+
+
+def take_container_screenshot(container) -> bytes | None:
+    """Run cua-screenshot inside a container, return PNG bytes."""
+    try:
+        exit_code, output = container.exec_run(
+            "cua-screenshot", demux=True,
+        )
+        if exit_code == 0 and output[0]:
+            b64 = output[0].decode().strip()
+            return base64.b64decode(b64)
+    except Exception as e:
+        log.warning("Screenshot exec failed: %s", e)
+    return None
+
+
+async def upload_and_send_image(
+    bot: slixmpp.ClientXMPP,
+    to_jid: str,
+    png_bytes: bytes,
+    caption: str = "",
+    filename: str = "screenshot.png",
+) -> bool:
+    """Upload an image via XEP-0363 and send the URL to the user.
+
+    Uses slixmpp's upload_file() helper which handles discovery,
+    slot request, and the HTTP PUT internally.  The PUT uses the
+    internal URL (reachable inside Docker).  The GET URL sent to
+    the phone is rewritten to use the external host if configured.
+    """
+    import tempfile
+    import os
+
+    # Write to a temp file since upload_file expects a path
+    fd, tmp_path = tempfile.mkstemp(suffix=".png")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(png_bytes)
+
+        # upload_file handles: discover service → request slot → PUT file
+        # Returns the GET URL (internal, e.g. http://cua.local:5280/...)
+        get_url = await bot["xep_0363"].upload_file(
+            tmp_path,
+            size=len(png_bytes),
+            content_type="image/png",
+        )
+
+        # Rewrite the URL for external access if configured
+        if HTTP_EXTERNAL_HOST:
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(get_url)
+            get_url = urlunparse(parsed._replace(netloc=HTTP_EXTERNAL_HOST))
+            log.info("Rewrote URL for external access: %s", get_url)
+
+        # Send caption as a separate message if present
+        if caption:
+            bot.send_message(mto=to_jid, mbody=caption, mtype="chat")
+
+        # Body must be ONLY the URL for Conversations to render inline
+        msg = bot.make_message(mto=to_jid, mtype="chat")
+        msg["body"] = get_url
+        msg["oob"]["url"] = get_url
+        msg.send()
+
+        log.info("Sent image via XEP-0363: %s", get_url)
+        return True
+
+    except Exception as e:
+        log.warning("Image upload failed: %s", e)
+        return False
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 # ── Task runner ──────────────────────────────────────────────
@@ -290,12 +377,36 @@ class TaskRunner:
                 outcome = "cancelled"
                 summary = "Task cancelled by user"
 
-        # Cleanup container
+        # Read full done payload (may contain screenshot_b64)
+        screenshot_b64 = None
         elapsed = time.monotonic() - self.start_time
         try:
             self.container.wait(timeout=10)
         except Exception:
             pass
+
+        if outcome == "completed":
+            try:
+                # Use get_archive — works on stopped containers
+                # (exec_run doesn't work after container exits)
+                import io, tarfile
+                stream, _ = self.container.get_archive("/tmp/cua_done.json")
+                tar_bytes = b"".join(stream)
+                tar = tarfile.open(fileobj=io.BytesIO(tar_bytes))
+                member = tar.getmembers()[0]
+                f = tar.extractfile(member)
+                if f:
+                    payload = json.loads(f.read().decode())
+                    screenshot_b64 = payload.get("screenshot_b64")
+                    summary = payload.get("summary", summary)
+                    task_result = payload.get("result", task_result)
+                    if screenshot_b64:
+                        log.info("Done payload includes screenshot (%d chars b64)",
+                                 len(screenshot_b64))
+            except Exception as e:
+                log.warning("Could not read done payload: %s", e)
+
+        # Cleanup container
         try:
             self.container.remove(force=True)
         except Exception as e:
@@ -305,6 +416,7 @@ class TaskRunner:
             "outcome": outcome,
             "summary": summary,
             "result": task_result,
+            "screenshot_b64": screenshot_b64,
             "steps": self.step,
             "elapsed": round(elapsed, 1),
         }
@@ -326,7 +438,9 @@ class OrchestratorBot(slixmpp.ClientXMPP):
         self.add_event_handler("disconnected", self.on_disconnect)
 
         self.register_plugin("xep_0030")  # Service Discovery
+        self.register_plugin("xep_0066")  # Out-of-Band Data (images)
         self.register_plugin("xep_0199")  # Ping
+        self.register_plugin("xep_0363")  # HTTP File Upload
 
     async def on_start(self, _event):
         self.send_presence(pshow="chat", pstatus="Ready for tasks")
@@ -355,6 +469,11 @@ class OrchestratorBot(slixmpp.ClientXMPP):
 
         log.info("Received from %s: %s", sender, body[:100])
 
+        # Slash commands work even while a task is running
+        if body.startswith("/"):
+            await self._handle_command(sender, body)
+            return
+
         # Check if a task is already running
         if self._runner.is_running:
             self.send_message(
@@ -362,15 +481,10 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                 mbody=(
                     f"⏳ A task is already running (step {self._runner.step}).\n"
                     f"Task: {self._runner.task_text[:100]}\n"
-                    f"Send /stop to cancel it."
+                    f"Send /stop to cancel it, /screenshot to see the screen."
                 ),
                 mtype="chat",
             )
-            return
-
-        # Slash commands
-        if body.startswith("/"):
-            await self._handle_command(sender, body)
             return
 
         # New task
@@ -386,6 +500,53 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                 self.send_message(
                     mto=sender,
                     mbody="🛑 Cancelling task...",
+                    mtype="chat",
+                )
+            else:
+                self.send_message(
+                    mto=sender,
+                    mbody="No task is running.",
+                    mtype="chat",
+                )
+
+        elif cmd == "/screenshot":
+            if not self._runner.is_running or not self._runner.container:
+                self.send_message(
+                    mto=sender,
+                    mbody="No task is running — nothing to screenshot.",
+                    mtype="chat",
+                )
+                return
+
+            self.send_message(mto=sender, mbody="📸 Capturing...", mtype="chat")
+
+            # Run in executor to avoid blocking
+            loop = asyncio.get_running_loop()
+            png_bytes = await loop.run_in_executor(
+                None, take_container_screenshot, self._runner.container
+            )
+
+            if png_bytes is None:
+                self.send_message(
+                    mto=sender,
+                    mbody="⚠️ Screenshot failed.",
+                    mtype="chat",
+                )
+                return
+
+            await self._send_screenshot(sender, png_bytes, "Current screen")
+
+        elif cmd == "/last":
+            if self._runner.is_running and self._runner.last_llm_reply:
+                self.send_message(
+                    mto=sender,
+                    mbody=f"🧠 Last LLM reply:\n{self._runner.last_llm_reply[:1000]}",
+                    mtype="chat",
+                )
+            elif self._runner.is_running:
+                self.send_message(
+                    mto=sender,
+                    mbody="No LLM reply yet.",
                     mtype="chat",
                 )
             else:
@@ -419,9 +580,11 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                 mto=sender,
                 mbody=(
                     "Available commands:\n"
-                    "  /status  — Check if a task is running\n"
-                    "  /stop    — Cancel the current task\n"
-                    "  /help    — Show this message\n"
+                    "  /screenshot — Capture the agent's screen\n"
+                    "  /last       — Show the last LLM reply\n"
+                    "  /status     — Check if a task is running\n"
+                    "  /stop       — Cancel the current task\n"
+                    "  /help       — Show this message\n"
                     "\nSend any other text to start a new task."
                 ),
                 mtype="chat",
@@ -431,6 +594,18 @@ class OrchestratorBot(slixmpp.ClientXMPP):
             self.send_message(
                 mto=sender,
                 mbody=f"Unknown command: {cmd}\nSend /help for available commands.",
+                mtype="chat",
+            )
+
+    async def _send_screenshot(self, to_jid: str, png_bytes: bytes, caption: str = ""):
+        """Upload a screenshot and send it to the user."""
+        ok = await upload_and_send_image(self, to_jid, png_bytes, caption)
+        if not ok:
+            # Fallback: send as text note
+            self.send_message(
+                mto=to_jid,
+                mbody=f"📸 {caption}\n(Image upload not available — "
+                      f"check Prosody HTTP File Share config)",
                 mtype="chat",
             )
 
@@ -455,6 +630,7 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                 "outcome": "error",
                 "summary": f"Internal error: {e}",
                 "result": None,
+                "screenshot_b64": None,
                 "steps": 0,
                 "elapsed": 0,
             }
@@ -477,6 +653,14 @@ class OrchestratorBot(slixmpp.ClientXMPP):
             )
 
         self.send_message(mto=sender, mbody=reply, mtype="chat")
+
+        # Send screenshot if included in result
+        if result.get("screenshot_b64"):
+            try:
+                png_bytes = base64.b64decode(result["screenshot_b64"])
+                await self._send_screenshot(sender, png_bytes, "Final screen state")
+            except Exception as e:
+                log.warning("Failed to send result screenshot: %s", e)
 
         # Set presence back to available
         self.send_presence(pshow="chat", pstatus="Ready for tasks")

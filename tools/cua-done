@@ -3,9 +3,21 @@
 
 Outputs a structured completion marker that the agent loop detects.
 Use --result to return extracted data (links, values, answers).
+Use --screenshot to capture and include the current screen state.
+
+The full payload (including any screenshot) is written to
+/tmp/cua_done.json so it can be read by the orchestrator without
+hitting stdout truncation limits.
+
+Examples:
+    cua-done "Opened Wikipedia and searched for AI"
+    cua-done "Found the reference link" --result "https://example.com/ref1"
+    cua-done "Here is the page" --screenshot
+    cua-done "Price is 42.50" -r "42.50" --screenshot
 """
 
 import json
+import subprocess
 from typing import Optional
 
 import typer
@@ -14,6 +26,9 @@ app = typer.Typer(add_completion=False)
 
 # Marker that the agent scans for in command output
 DONE_MARKER = "@@CUA_TASK_COMPLETE@@"
+
+# Full payload is written here for the orchestrator to read
+DONE_PAYLOAD_FILE = "/tmp/cua_done.json"
 
 
 @app.command()
@@ -27,21 +42,58 @@ def cua_done(
         "-r",
         help="Extracted value (link, text, number) if the task asked for one",
     ),
+    screenshot: bool = typer.Option(
+        False,
+        "--screenshot",
+        "-s",
+        help="Include a screenshot of the current screen in the result",
+    ),
 ) -> None:
     """Signal task completion.
 
     \b
     Examples:
-      done "Opened Wikipedia and searched for AI"
-      done "Found the reference link" --result "https://example.com/ref1"
-      done "Price is 42.50" -r "42.50"
+      cua-done "Opened Wikipedia and searched for AI"
+      cua-done "Found the reference link" --result "https://example.com/ref1"
+      cua-done "Here is the current page" --screenshot
+      cua-done "Price is 42.50" -r "42.50" --screenshot
     """
-    payload = {"summary": summary}
+    # Build the full payload
+    full_payload = {"summary": summary}
     if result is not None:
-        payload["result"] = result
+        full_payload["result"] = result
+
+    has_screenshot = False
+    if screenshot:
+        try:
+            proc = subprocess.run(
+                ["cua-screenshot"], capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                full_payload["screenshot_b64"] = proc.stdout.strip()
+                has_screenshot = True
+            else:
+                full_payload["screenshot_error"] = proc.stderr.strip() or "screenshot failed"
+        except Exception as e:
+            full_payload["screenshot_error"] = str(e)
+
+    # Write full payload to file (orchestrator reads this before
+    # removing the container — avoids stdout truncation)
+    try:
+        with open(DONE_PAYLOAD_FILE, "w") as f:
+            json.dump(full_payload, f)
+    except Exception:
+        pass
+
+    # Print only the small payload to stdout (no screenshot data)
+    stdout_payload = {"summary": summary}
+    if result is not None:
+        stdout_payload["result"] = result
+    if has_screenshot:
+        stdout_payload["has_screenshot"] = True
 
     typer.echo(DONE_MARKER)
-    typer.echo(json.dumps(payload))
+    typer.echo(json.dumps(stdout_payload))
 
 
 if __name__ == "__main__":

@@ -77,12 +77,15 @@ Coordinates are in your pixel space — calibration mapping is automatic.
 
 When the task is complete, use the cua-done tool with a summary.
 When asked to find or report a value, pass it via --result.
+When the task involves showing something visual, add --screenshot to
+include a capture of the current screen in the result.
 {extra}
 Examples:
   run: cua-click 450 300
   run: cua-type "hello world"
   run: cua-key ctrl+a
   run: cua-done "Opened Wikipedia" --result "https://en.wikipedia.org"
+  run: cua-done "Here is the page" --screenshot
   run: cat /etc/os-release | head -5
 """
 
@@ -525,9 +528,14 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             result = done_payload.get("result")
             ctx["result"] = result
 
+            # Full payload (with screenshot_b64) is written to
+            # /tmp/cua_done.json by cua-done itself.
+
             print(f"\n✅ Done: {summary}")
             if result:
                 print(f"   Result: {result}")
+            if done_payload.get("has_screenshot"):
+                print("   📸 Screenshot included")
 
             plugins.emit("on_task_complete", ctx, summary=summary, result=result)
             break
