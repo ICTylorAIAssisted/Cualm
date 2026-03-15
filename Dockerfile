@@ -42,7 +42,8 @@ COPY calibration /app/calibration
 RUN chmod +x /app/tools/* && \
     chmod +x /app/agent.py && \
     chmod +x /app/start.sh && \
-    find /app/plugins -path '*/tools/cua-*' -exec chmod +x {} +
+    find /app/plugins -path '*/tools/cua-*' -exec chmod +x {} + && \
+    mkdir -p /var/cua/calibration
 
 # Install plugin requirements (if any)
 RUN find /app/plugins -name 'requirements.txt' -exec \

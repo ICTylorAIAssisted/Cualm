@@ -25,6 +25,7 @@ services:
       CUA_AGENT_IMAGE: ${CUA_AGENT_IMAGE:-cua-agent}
       CUA_DOCKER_NETWORK: ${CUA_DOCKER_NETWORK:-}
       CUA_AGENT_TIMEOUT: ${CUA_AGENT_TIMEOUT:-600}
+      CUA_CALIBRATION_VOLUME: ${COMPOSE_PROJECT_NAME:-cua-minimal}_cua-calibration
       # LLM settings passed through to spawned agents
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:8000/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-not-needed}

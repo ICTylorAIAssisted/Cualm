@@ -27,7 +27,7 @@ _SEARCH_PATHS = [
 
 _DEFAULTS = {
     "screen": {"width": "1280", "height": "800", "display": ":99"},
-    "calibration": {"file": "/tmp/cua_calibration.json"},
+    "calibration": {"dir": "/var/cua/calibration"},
     "mouse": {
         "move_delay": "0.1",
         "default_button": "1",
@@ -97,7 +97,40 @@ _CAL_NO_CALIBRATION_MSG = (
 
 
 def _cal_file(cfg: configparser.ConfigParser) -> str:
-    return cfg.get("calibration", "file")
+    """Return the active calibration file path.
+
+    Resolution order:
+      1. CUA_CALIBRATION_FILE env var (set by agent.py per model)
+      2. Legacy [calibration] file key (backward compat)
+      3. None — caller should handle missing calibration
+    """
+    env_path = os.environ.get("CUA_CALIBRATION_FILE", "")
+    if env_path:
+        return env_path
+
+    # Legacy: if config still has a 'file' key (old config.ini)
+    try:
+        return cfg.get("calibration", "file")
+    except configparser.NoOptionError:
+        pass
+
+    # Fall back to dir-based path (no model info — use generic name)
+    cal_dir = cfg.get("calibration", "dir")
+    return os.path.join(cal_dir, "default.json")
+
+
+def calibration_file_for_model(
+    cfg: configparser.ConfigParser, model: str
+) -> str:
+    """Return the calibration path for a specific model.
+
+    Sanitizes the model name into a safe filename slug.
+    """
+    cal_dir = cfg.get("calibration", "dir")
+    # Sanitize model name: replace non-alnum with underscore
+    slug = "".join(c if c.isalnum() or c in "-_." else "_" for c in model)
+    slug = slug.strip("_") or "default"
+    return os.path.join(cal_dir, f"{slug}.json")
 
 
 def load_calibration(
@@ -132,6 +165,7 @@ def save_calibration(
 ) -> str:
     """Persist calibration to the file. Returns the file path."""
     path = _cal_file(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {"scale_x": scale_x, "scale_y": scale_y}
     with open(path, "w") as f:
         json.dump(data, f)

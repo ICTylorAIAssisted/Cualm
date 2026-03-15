@@ -22,7 +22,7 @@ from typing import Any
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
-from cua_config import load_config
+from cua_config import load_config, calibration_file_for_model, load_calibration
 from plugin_host import PluginHost
 from tool_discovery import discover_tools
 
@@ -315,11 +315,10 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     def extract_command(text):
         return ctx["extract_command"](ctx, text)
 
-    # Remove stale calibration from previous sessions
-    cal_file = cfg.get("calibration", "file")
-    if os.path.isfile(cal_file):
-        os.remove(cal_file)
-        print(f"   Cleared old calibration: {cal_file}")
+    # ── Set up model-specific calibration ──
+    cal_path = calibration_file_for_model(cfg, MODEL)
+    os.environ["CUA_CALIBRATION_FILE"] = cal_path
+    print(f"   Calibration file: {cal_path}")
 
     messages: list[ChatCompletionMessageParam] = [make_system_msg(system_prompt)]
     errors_in_a_row = 0
@@ -327,41 +326,117 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     task_done = False
     done_payload: dict[str, Any] = {}
 
-    # ── Step 0: calibration ──
-    print("\n── Calibration ──")
-    plugins.emit("on_pre_screenshot", ctx)
-    img_b64 = take_screenshot()
-    plugins.emit("on_post_screenshot", ctx, img_b64=img_b64)
-    messages.append(make_user_msg(img_b64, CALIBRATION_PROMPT))
+    # ── Step 0: calibration (skipped if cached for this model) ──
+    CALIBRATION_STEPS = 3   # must match calibration/index.html STEPS count
+    MAX_CAL_ATTEMPTS = 3    # retry if verification fails
 
-    try:
-        plugins.emit("on_pre_llm_call", ctx, messages=messages)
-        reply = llm_call(messages)
-        usage = ctx.pop("_last_usage", {})
-        plugins.emit("on_post_llm_call", ctx, messages=messages, reply=reply, usage=usage)
-        messages.append(make_assistant_msg(reply))
-        print(f"   LLM → {reply[:200]}")
+    existing_cal = load_calibration(cfg)
+    if existing_cal is not None:
+        print(f"\n── Calibration (cached) ──")
+        print(f"   scale=({existing_cal['scale_x']:.4f}, {existing_cal['scale_y']:.4f})")
+        # Exit fullscreen and dismiss the calibration page
+        run_command("cua-key F11")
+        time.sleep(0.3)
+        run_command("cua-key ctrl+l")
+        time.sleep(0.1)
+        run_command('cua-type "about:blank"')
+        run_command("cua-key Return")
+        time.sleep(0.5)
+    else:
+        print("\n── Calibration (multi-step) ──")
+        calibrated = False
 
-        command = extract_command(reply)
-        plugins.emit("on_pre_command", ctx, command=command)
-        output = run_command(command)
-        plugins.emit("on_post_command", ctx, command=command, output=output)
-        print(f"   Output: {output}")
-        messages.append({"role": "user", "content": output})
+        for attempt in range(MAX_CAL_ATTEMPTS):
+            # Clear any stale calibration so cua-click recalibrates
+            if os.path.isfile(cal_path):
+                os.remove(cal_path)
 
-    except Exception as e:
-        print(f"   ⚠ Calibration failed: {e}, running identity calibration")
-        cx, cy = SCREEN_W // 2, SCREEN_H // 2
-        output = run_command(f"cua-click {cx} {cy}")
-        print(f"   Fallback: {output}")
-        messages.append(make_assistant_msg(f"run: cua-click {cx} {cy}"))
-        messages.append({"role": "user", "content": output})
+            if attempt > 0:
+                print(f"   Retry {attempt + 1}/{MAX_CAL_ATTEMPTS}")
+                # Reload the calibration page for a fresh attempt
+                run_command("cua-key F11")
+                time.sleep(0.3)
+                run_command("cua-key ctrl+l")
+                time.sleep(0.1)
+                run_command('cua-type "file:///app/calibration/index.html"')
+                run_command("cua-key Return")
+                time.sleep(1)
+                # Re-enter fullscreen
+                run_command("cua-key F11")
+                time.sleep(0.5)
 
-    # return to windowed mode
-    run_command("cua-key F11")
+            # Do CALIBRATION_STEPS rounds of screenshot → click
+            for click_round in range(CALIBRATION_STEPS):
+                try:
+                    plugins.emit("on_pre_screenshot", ctx)
+                    img_b64 = take_screenshot()
+                    plugins.emit("on_post_screenshot", ctx, img_b64=img_b64)
 
-    # Let the calibration target page dismiss before the first screenshot
-    time.sleep(0.5)
+                    cal_messages = [
+                        make_system_msg(system_prompt),
+                        make_user_msg(img_b64, CALIBRATION_PROMPT),
+                    ]
+
+                    plugins.emit("on_pre_llm_call", ctx, messages=cal_messages)
+                    reply = llm_call(cal_messages)
+                    usage = ctx.pop("_last_usage", {})
+                    plugins.emit("on_post_llm_call", ctx,
+                                 messages=cal_messages, reply=reply, usage=usage)
+                    print(f"   Click {click_round + 1}/{CALIBRATION_STEPS}: "
+                          f"LLM → {reply[:120]}")
+
+                    command = extract_command(reply)
+                    plugins.emit("on_pre_command", ctx, command=command)
+                    output = run_command(command)
+                    plugins.emit("on_post_command", ctx,
+                                 command=command, output=output)
+                    print(f"   → {output[:100]}")
+
+                except Exception as e:
+                    print(f"   ⚠ Click {click_round + 1} failed: {e}")
+                    if click_round == 0 and not os.path.isfile(cal_path):
+                        cx, cy = SCREEN_W // 2, SCREEN_H // 2
+                        run_command(f"cua-click {cx} {cy}")
+                        print("   → Fallback: identity calibration")
+
+                time.sleep(0.5)
+
+            # Wait for page to evaluate and set window title
+            time.sleep(1)
+
+            # Check result via window title ("PASS" or "FAIL")
+            title_output = run_command(
+                "xdotool getactivewindow getwindowname 2>/dev/null || echo UNKNOWN"
+            )
+            title = title_output.split("\n")[0].strip()
+
+            if "PASS" in title.upper():
+                calibrated = True
+                cal = load_calibration(cfg)
+                if cal:
+                    print(f"   ✓ Calibrated: "
+                          f"scale=({cal['scale_x']:.4f}, {cal['scale_y']:.4f})")
+                break
+            else:
+                print(f"   ✗ Verification failed (title: {title})")
+                if os.path.isfile(cal_path):
+                    os.remove(cal_path)
+
+        if not calibrated:
+            print("   ⚠ All attempts failed — using identity calibration")
+            if os.path.isfile(cal_path):
+                os.remove(cal_path)
+            cx, cy = SCREEN_W // 2, SCREEN_H // 2
+            run_command(f"cua-click {cx} {cy}")
+
+        # Exit fullscreen and dismiss calibration page
+        run_command("cua-key F11")
+        time.sleep(0.3)
+        run_command("cua-key ctrl+l")
+        time.sleep(0.1)
+        run_command('cua-type "about:blank"')
+        run_command("cua-key Return")
+        time.sleep(0.5)
 
     # Reset context — drop calibration exchange so the model starts fresh
     # and doesn't treat the calibration click as the user's actual task.

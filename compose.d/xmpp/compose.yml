@@ -24,6 +24,7 @@ services:
       - "5280:5280"
     volumes:
       - prosody-data:/var/lib/prosody
+      - prosody-certs:/etc/prosody/certs
     restart: unless-stopped
 
   # Extend the base cua service with XMPP configuration
@@ -43,4 +44,5 @@ services:
 
 volumes:
   prosody-data:
+  prosody-certs:
   xmpp-spool:

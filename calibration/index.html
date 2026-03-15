@@ -1,27 +1,173 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Ready</title>
-        <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }
-            html,
-            body {
-                width: 100vw;
-                height: 100vh;
-                overflow: hidden;
-                background: white;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-            }
-        </style>
-    </head>
-    <body>
-        <button onclick="window.location = 'about:blank'">Click</button>
-    </body>
+<head>
+<meta charset="UTF-8">
+<title>Calibration</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: white;
+  }
+
+  #btn {
+    position: absolute;
+    cursor: pointer;
+    /* centered by JS */
+    transform: translate(-50%, -50%);
+  }
+
+  #step-indicator {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #555;
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+  }
+
+  #result-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    justify-content: center;
+    align-items: center;
+    font-size: 2rem;
+    font-weight: 700;
+    z-index: 10;
+  }
+  #result-overlay.show { display: flex; }
+  #result-overlay.success { background: rgba(78, 204, 163, 0.15); color: #4ecca3; }
+  #result-overlay.fail { background: rgba(233, 69, 96, 0.15); color: #e94560; }
+</style>
+</head>
+<body>
+
+<div id="step-indicator"></div>
+<button id="btn">Start</button>
+<div id="result-overlay"></div>
+
+<script>
+(function() {
+  "use strict";
+
+  // ── Configuration ─────────────────────────────────────────
+  // Button positions as % of viewport.  Step 0 is the calibration
+  // click (center); steps 1+ are verification positions.
+  var STEPS = [
+    { x: 50, y: 50, label: "Start" },        // center — calibration
+    { x: 25, y: 30, label: "Click me" },      // upper-left verification
+    { x: 75, y: 70, label: "Click me" },      // lower-right verification
+  ];
+
+  // Max allowed offset (pixels) between click point and button center
+  // for verification clicks to pass.
+  var MAX_OFFSET_PX = 60;
+
+  // ── State ─────────────────────────────────────────────────
+  var step = 0;
+  var offsets = [];
+  var btn = document.getElementById("btn");
+  var indicator = document.getElementById("step-indicator");
+  var overlay = document.getElementById("result-overlay");
+
+  function positionButton(s) {
+    btn.style.left = s.x + "%";
+    btn.style.top = s.y + "%";
+    btn.textContent = s.label;
+  }
+
+  function updateIndicator() {
+    var dots = "";
+    for (var i = 0; i < STEPS.length; i++) {
+      if (i < step) dots += "● ";
+      else if (i === step) dots += "◉ ";
+      else dots += "○ ";
+    }
+    indicator.textContent = "Calibration " + dots + " (" + (step + 1) + "/" + STEPS.length + ")";
+  }
+
+  function distance(x1, y1, x2, y2) {
+    var dx = x1 - x2;
+    var dy = y1 - y2;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function showResult(success) {
+    overlay.className = "show " + (success ? "success" : "fail");
+    overlay.textContent = success ? "✓ Calibration OK" : "✗ Calibration imprecise";
+    btn.style.display = "none";
+
+    // Set title so the agent can detect result via xdotool
+    document.title = success ? "PASS" : "FAIL";
+
+    // Don't auto-navigate — the agent reads the title and
+    // navigates away itself to avoid a race condition.
+  }
+
+  // ── Click handler ─────────────────────────────────────────
+  // Listen on document to catch clicks even if slightly off the button
+  document.addEventListener("click", function(e) {
+    if (step >= STEPS.length) return;
+
+    var current = STEPS[step];
+
+    // Button center in pixels
+    var btnCenterX = window.innerWidth * current.x / 100;
+    var btnCenterY = window.innerHeight * current.y / 100;
+
+    // Click position
+    var clickX = e.clientX;
+    var clickY = e.clientY;
+
+    var offset = distance(clickX, clickY, btnCenterX, btnCenterY);
+
+    if (step === 0) {
+      // Calibration click — just accept and advance
+      // (cua-click computes scale from this)
+      step++;
+      if (step < STEPS.length) {
+        positionButton(STEPS[step]);
+        updateIndicator();
+      }
+    } else {
+      // Verification click — measure accuracy
+      offsets.push({ step: step, offset: Math.round(offset), x: clickX, y: clickY,
+                     targetX: Math.round(btnCenterX), targetY: Math.round(btnCenterY) });
+
+      step++;
+
+      if (step < STEPS.length) {
+        // More steps to go
+        positionButton(STEPS[step]);
+        updateIndicator();
+      } else {
+        // All steps done — evaluate
+        var maxOffset = 0;
+        for (var i = 0; i < offsets.length; i++) {
+          if (offsets[i].offset > maxOffset) maxOffset = offsets[i].offset;
+        }
+
+        var pass = maxOffset <= MAX_OFFSET_PX;
+
+        // Log to console for debugging
+        console.log("Calibration result:", pass ? "PASS" : "FAIL",
+                     "maxOffset=" + maxOffset + "px",
+                     "threshold=" + MAX_OFFSET_PX + "px",
+                     JSON.stringify(offsets));
+
+        showResult(pass);
+      }
+    }
+  });
+
+  // ── Init ──────────────────────────────────────────────────
+  positionButton(STEPS[0]);
+  updateIndicator();
+})();
+</script>
+</body>
 </html>

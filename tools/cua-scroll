@@ -2,11 +2,23 @@
 """Scroll at a screen coordinate.
 
 Moves the mouse to (X, Y), then sends scroll-wheel events.
-Requires calibration (run `click` at screen center first).
+Requires calibration (run `cua-click` at screen center first).
+
+Scroll direction can be set three ways:
+  cua-scroll 500 300 --direction up     explicit flag
+  cua-scroll 500 300 --up               shorthand
+  cua-scroll 500 300 -3                 negative clicks = scroll up
+
+Examples:
+  cua-scroll 500 300                    scroll down 3 clicks at (500, 300)
+  cua-scroll 500 300 --up               scroll up 3 clicks at (500, 300)
+  cua-scroll 500 300 --direction up     same as above
+  cua-scroll 500 300 --clicks 10        scroll down 10 clicks
+  cua-scroll 500 300 --up --clicks 5    scroll up 5 clicks
 """
 
 import subprocess
-from enum import Enum
+import sys
 
 import typer
 
@@ -15,21 +27,63 @@ from cua_config import get_display, load_config, map_coords, require_calibration
 app = typer.Typer(add_completion=False)
 
 
-class Direction(str, Enum):
-    up = "up"
-    down = "down"
+def _parse_args():
+    """Pre-parse args to handle negative numbers that Typer mistakes for flags.
+
+    Converts patterns like:
+      cua-scroll 500 300 -3      → cua-scroll 500 300 --up --clicks 3
+      cua-scroll 500 -300        → treats -300 as Y coordinate (valid)
+    """
+    args = sys.argv[1:]
+    fixed = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        # A bare negative number after at least 2 positional args
+        # (X and Y are consumed) is probably intended as scroll amount
+        if (
+            arg.startswith("-")
+            and not arg.startswith("--")
+            and len(arg) > 1
+            and arg[1:].isdigit()
+            and len(fixed) >= 2
+            and not any(a in fixed for a in ("--clicks", "-c"))
+        ):
+            amount = int(arg[1:])
+            fixed.extend(["--up", "--clicks", str(amount)])
+        else:
+            fixed.append(arg)
+        i += 1
+    return fixed
 
 
 @app.command()
 def cua_scroll(
     x: int = typer.Argument(..., help="X coordinate (pixels, model space)"),
     y: int = typer.Argument(..., help="Y coordinate (pixels, model space)"),
-    direction: Direction = typer.Option(
-        Direction.down, "--direction", "-d", help="Scroll direction"
+    direction: str = typer.Option(
+        "down", "--direction", "-d",
+        help="Scroll direction: 'up' or 'down'",
     ),
-    clicks: int = typer.Option(None, "--clicks", "-c", help="Number of scroll clicks"),
+    up: bool = typer.Option(
+        False, "--up", "-u",
+        help="Scroll up (shorthand for --direction up)",
+    ),
+    clicks: int = typer.Option(
+        None, "--clicks", "-c",
+        help="Number of scroll clicks",
+    ),
 ) -> None:
-    """Scroll at screen coordinate (X, Y)."""
+    """Scroll at screen coordinate (X, Y).
+
+    \b
+    Examples:
+      cua-scroll 500 300                    Scroll down at (500,300)
+      cua-scroll 500 300 --up               Scroll up
+      cua-scroll 500 300 --direction up     Same as --up
+      cua-scroll 500 300 --clicks 10        Scroll down 10 clicks
+      cua-scroll 500 300 --up --clicks 5    Scroll up 5 clicks
+    """
     cfg = load_config()
     cal = require_calibration(cfg)
     env = get_display(cfg)
@@ -37,8 +91,18 @@ def cua_scroll(
     if clicks is None:
         clicks = cfg.getint("scroll", "default_clicks")
 
+    # --up flag overrides --direction
+    scroll_dir = "up" if up else direction.lower()
+    if scroll_dir not in ("up", "down"):
+        typer.echo(
+            f"Invalid direction: '{scroll_dir}'. Use 'up' or 'down'.\n"
+            f"Example: cua-scroll {x} {y} --direction up",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     sx, sy = map_coords(cfg, cal, x, y)
-    button = "4" if direction == Direction.up else "5"
+    button = "4" if scroll_dir == "up" else "5"
 
     try:
         subprocess.run(
@@ -59,9 +123,11 @@ def cua_scroll(
         raise typer.Exit(1)
 
     typer.echo(
-        f"Scrolled {direction.value} {clicks} clicks model({x},{y}) → screen({sx},{sy})"
+        f"Scrolled {scroll_dir} {clicks} clicks model({x},{y}) → screen({sx},{sy})"
     )
 
 
 if __name__ == "__main__":
+    # Pre-process args to handle negative numbers gracefully
+    sys.argv[1:] = _parse_args()
     app()

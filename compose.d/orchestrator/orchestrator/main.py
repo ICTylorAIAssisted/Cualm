@@ -40,7 +40,8 @@ ALLOWED_USER = os.environ.get("ORCH_ALLOWED_USER", "user@cua.local")
 # Docker / agent settings
 AGENT_IMAGE = os.environ.get("CUA_AGENT_IMAGE", "cua-agent")
 DOCKER_NETWORK = os.environ.get("CUA_DOCKER_NETWORK", "")  # auto-detected if empty
-AGENT_TIMEOUT = int(os.environ.get("CUA_AGENT_TIMEOUT", "600"))  # 10 min default
+AGENT_TIMEOUT = int(os.environ.get("CUA_AGENT_TIMEOUT", "600"))
+CALIBRATION_VOLUME = os.environ.get("CUA_CALIBRATION_VOLUME", "")  # 10 min default
 
 # LLM settings to pass through to spawned agents
 LLM_ENV = {
@@ -212,6 +213,14 @@ class TaskRunner:
 
         log.info("Spawning container %s for task: %s", name, task[:80])
 
+        # Volumes to mount into the agent container
+        volumes = {}
+        if CALIBRATION_VOLUME:
+            volumes[CALIBRATION_VOLUME] = {
+                "bind": "/var/cua/calibration",
+                "mode": "rw",
+            }
+
         try:
             self.container = client.containers.run(
                 image=image,
@@ -220,6 +229,7 @@ class TaskRunner:
                 environment=env,
                 network=network,
                 extra_hosts={"host.docker.internal": host_ip},
+                volumes=volumes,
                 detach=True,
                 # Resource limits
                 mem_limit="2g",
