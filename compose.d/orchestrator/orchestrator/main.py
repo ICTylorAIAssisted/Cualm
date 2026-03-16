@@ -432,6 +432,8 @@ class OrchestratorBot(slixmpp.ClientXMPP):
         super().__init__(jid, password)
         self._server_addr = server_addr
         self._runner = TaskRunner()
+        self._queue = []          # list of {"id": int, "task": str, "sender": str}
+        self._task_counter = 0    # monotonic task ID
 
         self.add_event_handler("session_start", self.on_start)
         self.add_event_handler("message", self.on_message)
@@ -474,21 +476,26 @@ class OrchestratorBot(slixmpp.ClientXMPP):
             await self._handle_command(sender, body)
             return
 
-        # Check if a task is already running
+        # Enqueue the task
+        self._task_counter += 1
+        task_id = self._task_counter
+        entry = {"id": task_id, "task": body, "sender": sender}
+
         if self._runner.is_running:
+            self._queue.append(entry)
+            position = len(self._queue)
             self.send_message(
                 mto=sender,
                 mbody=(
-                    f"⏳ A task is already running (step {self._runner.step}).\n"
-                    f"Task: {self._runner.task_text[:100]}\n"
-                    f"Send /stop to cancel it, /screenshot to see the screen."
+                    f"📋 Queued as #{task_id} ({position} task{'s' if position > 1 else ''} ahead).\n"
+                    f"Task: {body[:100]}\n"
+                    f"Send /queue to see the queue, /cancel {task_id} to remove."
                 ),
                 mtype="chat",
             )
-            return
-
-        # New task
-        await self._run_task(sender, body)
+        else:
+            # Run immediately
+            await self._run_task(entry)
 
     async def _handle_command(self, sender: str, body: str):
         """Handle slash commands."""
@@ -508,6 +515,59 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                     mbody="No task is running.",
                     mtype="chat",
                 )
+
+        elif cmd == "/queue":
+            if not self._queue:
+                self.send_message(
+                    mto=sender,
+                    mbody="📋 Queue is empty.",
+                    mtype="chat",
+                )
+            else:
+                lines = ["📋 Queued tasks:"]
+                for i, entry in enumerate(self._queue, 1):
+                    lines.append(f"  {i}. #{entry['id']} — {entry['task'][:80]}")
+                self.send_message(
+                    mto=sender,
+                    mbody="\n".join(lines),
+                    mtype="chat",
+                )
+
+        elif cmd == "/cancel":
+            parts = body.split()
+            if len(parts) < 2 or not parts[1].lstrip("#").isdigit():
+                self.send_message(
+                    mto=sender,
+                    mbody="Usage: /cancel <task_id>\nSend /queue to see task IDs.",
+                    mtype="chat",
+                )
+                return
+
+            cancel_id = int(parts[1].lstrip("#"))
+            before = len(self._queue)
+            self._queue = [e for e in self._queue if e["id"] != cancel_id]
+
+            if len(self._queue) < before:
+                self.send_message(
+                    mto=sender,
+                    mbody=f"✓ Cancelled task #{cancel_id}.",
+                    mtype="chat",
+                )
+            else:
+                self.send_message(
+                    mto=sender,
+                    mbody=f"Task #{cancel_id} not found in queue.\nSend /queue to see queued tasks.",
+                    mtype="chat",
+                )
+
+        elif cmd == "/clear":
+            count = len(self._queue)
+            self._queue.clear()
+            self.send_message(
+                mto=sender,
+                mbody=f"✓ Cleared {count} queued task{'s' if count != 1 else ''}.",
+                mtype="chat",
+            )
 
         elif cmd == "/screenshot":
             if not self._runner.is_running or not self._runner.container:
@@ -559,13 +619,16 @@ class OrchestratorBot(slixmpp.ClientXMPP):
         elif cmd == "/status":
             if self._runner.is_running:
                 elapsed = time.monotonic() - self._runner.start_time
+                parts = [
+                    f"🔄 Running task (step {self._runner.step}, "
+                    f"{elapsed:.0f}s elapsed)",
+                    f"Task: {self._runner.task_text[:100]}",
+                ]
+                if self._queue:
+                    parts.append(f"📋 {len(self._queue)} task{'s' if len(self._queue) > 1 else ''} queued")
                 self.send_message(
                     mto=sender,
-                    mbody=(
-                        f"🔄 Running task (step {self._runner.step}, "
-                        f"{elapsed:.0f}s elapsed)\n"
-                        f"Task: {self._runner.task_text[:100]}"
-                    ),
+                    mbody="\n".join(parts),
                     mtype="chat",
                 )
             else:
@@ -582,10 +645,13 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                     "Available commands:\n"
                     "  /screenshot — Capture the agent's screen\n"
                     "  /last       — Show the last LLM reply\n"
-                    "  /status     — Check if a task is running\n"
-                    "  /stop       — Cancel the current task\n"
+                    "  /status     — Check task and queue status\n"
+                    "  /queue      — Show queued tasks\n"
+                    "  /cancel N   — Remove task #N from queue\n"
+                    "  /clear      — Clear the entire queue\n"
+                    "  /stop       — Cancel the running task\n"
                     "  /help       — Show this message\n"
-                    "\nSend any other text to start a new task."
+                    "\nSend any other text to start or queue a task."
                 ),
                 mtype="chat",
             )
@@ -609,17 +675,22 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                 mtype="chat",
             )
 
-    async def _run_task(self, sender: str, task: str):
+    async def _run_task(self, entry: dict):
         """Spawn an agent container and relay the result."""
+        task = entry["task"]
+        sender = entry["sender"]
+        task_id = entry["id"]
+
         # Acknowledge
         self.send_message(
             mto=sender,
-            mbody=f"🚀 Starting task: {task[:100]}",
+            mbody=f"🚀 Starting task #{task_id}: {task[:100]}",
             mtype="chat",
         )
 
         # Set presence to busy
-        self.send_presence(pshow="dnd", pstatus=f"Running: {task[:60]}")
+        queue_note = f" ({len(self._queue)} queued)" if self._queue else ""
+        self.send_presence(pshow="dnd", pstatus=f"Running #{task_id}{queue_note}")
 
         # Run in background
         try:
@@ -637,18 +708,18 @@ class OrchestratorBot(slixmpp.ClientXMPP):
 
         # Format result message
         if result["outcome"] == "completed":
-            parts = [f"✅ {result['summary']}"]
+            parts = [f"✅ #{task_id}: {result['summary']}"]
             if result["result"]:
                 parts.append(f"Result: {result['result']}")
             parts.append(f"({result['steps']} steps, {result['elapsed']}s)")
             reply = "\n".join(parts)
         elif result["outcome"] == "cancelled":
-            reply = f"🛑 Task cancelled after {result['steps']} steps."
+            reply = f"🛑 #{task_id}: Cancelled after {result['steps']} steps."
         elif result["outcome"] == "error":
-            reply = f"❌ {result['summary']}"
+            reply = f"❌ #{task_id}: {result['summary']}"
         else:
             reply = (
-                f"⚠️ Task did not complete ({result['outcome']}).\n"
+                f"⚠️ #{task_id}: Task did not complete ({result['outcome']}).\n"
                 f"Ran for {result['steps']} steps in {result['elapsed']}s."
             )
 
@@ -662,8 +733,17 @@ class OrchestratorBot(slixmpp.ClientXMPP):
             except Exception as e:
                 log.warning("Failed to send result screenshot: %s", e)
 
-        # Set presence back to available
-        self.send_presence(pshow="chat", pstatus="Ready for tasks")
+        # Process next task in queue
+        await self._process_queue()
+
+    async def _process_queue(self):
+        """Pop and run the next queued task, or go idle."""
+        if self._queue:
+            entry = self._queue.pop(0)
+            log.info("Dequeued task #%d (%d remaining)", entry["id"], len(self._queue))
+            await self._run_task(entry)
+        else:
+            self.send_presence(pshow="chat", pstatus="Ready for tasks")
 
 
 # ── Main ─────────────────────────────────────────────────────
