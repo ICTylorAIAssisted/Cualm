@@ -24,6 +24,8 @@ services:
       # External host:port for file upload URLs reachable from phones
       # e.g. 192.168.50.198:5280
       ORCH_HTTP_HOST: ${XMPP_HTTP_HOST:-}
+      # MUC domain for task rooms
+      ORCH_MUC_DOMAIN: conference.cua.local
       # Agent container settings
       CUA_AGENT_IMAGE: ${CUA_AGENT_IMAGE:-cua-agent}
       CUA_DOCKER_NETWORK: ${CUA_DOCKER_NETWORK:-}

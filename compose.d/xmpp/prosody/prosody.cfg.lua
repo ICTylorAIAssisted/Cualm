@@ -91,3 +91,13 @@ Component "upload.cua.local" "http_file_share"
     http_file_share_size_limit = 10485760  -- 10 MB
     http_file_share_expires_after = 86400  -- 1 day
     http_host = "cua.local"
+
+-- Multi-User Chat — one room per task for conversation logs
+Component "conference.cua.local" "muc"
+    modules_enabled = { "muc_mam" }       -- message archiving per room
+    restrict_room_creation = "local"       -- only local users can create
+    max_history_messages = 200
+    muc_room_default_persistent = true     -- rooms survive restarts
+    muc_room_default_public = false        -- don't list in directory
+    muc_room_default_members_only = true   -- invite-only
+    muc_room_default_whois = "anyone"      -- show real JIDs to members

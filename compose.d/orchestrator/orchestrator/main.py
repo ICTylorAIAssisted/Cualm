@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import os
+import queue
 import re
 import signal
 import ssl
@@ -24,6 +25,7 @@ from datetime import datetime, timezone
 
 import docker
 import slixmpp
+from slixmpp.exceptions import IqError, IqTimeout
 
 log = logging.getLogger("orchestrator")
 
@@ -34,6 +36,9 @@ XMPP_PASSWORD = os.environ.get("ORCH_XMPP_PASSWORD", "orch-secret")
 XMPP_HOST = os.environ.get("ORCH_XMPP_HOST", "prosody")
 XMPP_PORT = int(os.environ.get("ORCH_XMPP_PORT", "5222"))
 XMPP_VERIFY_CERT = os.environ.get("ORCH_XMPP_VERIFY_CERT", "false").lower() == "true"
+
+# MUC (Multi-User Chat) domain for task rooms
+MUC_DOMAIN = os.environ.get("ORCH_MUC_DOMAIN", "conference.cua.local")
 
 # Who is allowed to send tasks
 ALLOWED_USER = os.environ.get("ORCH_ALLOWED_USER", "user@cua.local")
@@ -178,6 +183,7 @@ async def upload_and_send_image(
     png_bytes: bytes,
     caption: str = "",
     filename: str = "screenshot.png",
+    msg_type: str = "chat",
 ) -> bool:
     """Upload an image via XEP-0363 and send the URL to the user.
 
@@ -212,10 +218,10 @@ async def upload_and_send_image(
 
         # Send caption as a separate message if present
         if caption:
-            bot.send_message(mto=to_jid, mbody=caption, mtype="chat")
+            bot.send_message(mto=to_jid, mbody=caption, mtype=msg_type)
 
         # Body must be ONLY the URL for Conversations to render inline
-        msg = bot.make_message(mto=to_jid, mtype="chat")
+        msg = bot.make_message(mto=to_jid, mtype=msg_type)
         msg["body"] = get_url
         msg["oob"]["url"] = get_url
         msg.send()
@@ -247,6 +253,7 @@ class TaskRunner:
         self.step = 0
         self.last_llm_reply = ""
         self._cancel = False
+        self._update_queue = queue.Queue()  # thread → async bridge
 
     @property
     def is_running(self) -> bool:
@@ -262,6 +269,10 @@ class TaskRunner:
             except Exception as e:
                 log.warning("Kill failed: %s", e)
 
+    def _emit_update(self, kind: str, **kwargs):
+        """Enqueue an update from the sync thread for async dispatch."""
+        self._update_queue.put({"kind": kind, **kwargs})
+
     async def run(self, task: str, requester: str) -> dict:
         """Spawn an agent container and stream its output.
 
@@ -274,6 +285,12 @@ class TaskRunner:
         self.step = 0
         self.last_llm_reply = ""
         self._cancel = False
+        # Drain any stale updates
+        while not self._update_queue.empty():
+            try:
+                self._update_queue.get_nowait()
+            except queue.Empty:
+                break
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, self._run_sync, task)
@@ -338,6 +355,7 @@ class TaskRunner:
         outcome = "max_steps"
         summary = "Task completed"
         task_result = None
+        last_command = ""
 
         try:
             for chunk in self.container.logs(stream=True, follow=True):
@@ -354,10 +372,29 @@ class TaskRunner:
                         m = re.search(r"Step (\d+)", line)
                         if m:
                             self.step = int(m.group(1))
+                            self._emit_update("step", step=self.step)
 
-                    # Track last LLM reply
+                    # Track last LLM reply (strip <think> tags)
                     elif "LLM →" in line:
-                        self.last_llm_reply = line.split("LLM →", 1)[1].strip()
+                        raw = line.split("LLM →", 1)[1].strip()
+                        # Remove <think>...</think> and show only the action part
+                        clean = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL)
+                        clean = re.sub(r"<think>.*", "", clean, flags=re.DOTALL).strip()
+                        self.last_llm_reply = clean or raw[:200]
+
+                    # Track commands
+                    elif line.strip().startswith("Command:"):
+                        last_command = line.split("Command:", 1)[1].strip()
+                        # Emit a room update with the command
+                        self._emit_update(
+                            "command",
+                            step=self.step,
+                            command=last_command,
+                        )
+
+                    # Track errors
+                    elif "⚠" in line or "error" in line.lower()[:20]:
+                        self._emit_update("error", step=self.step, message=line.strip())
 
                     # Detect completion
                     elif line.startswith("✅ Done:"):
@@ -370,6 +407,9 @@ class TaskRunner:
                     elif "Reached max steps" in line:
                         outcome = "max_steps"
                         summary = "Reached maximum steps without completing"
+
+                    elif "📸 Screenshot included" in line:
+                        self._emit_update("screenshot_included", step=self.step)
 
         except Exception as e:
             log.warning("Log streaming error: %s", e)
@@ -434,12 +474,16 @@ class OrchestratorBot(slixmpp.ClientXMPP):
         self._runner = TaskRunner()
         self._queue = []          # list of {"id": int, "task": str, "sender": str}
         self._task_counter = 0    # monotonic task ID
+        self._active_room = ""    # JID of the room for the current task
+        self._task_rooms = {}     # task_id → room JID
 
         self.add_event_handler("session_start", self.on_start)
         self.add_event_handler("message", self.on_message)
+        self.add_event_handler("groupchat_message", self.on_groupchat_message)
         self.add_event_handler("disconnected", self.on_disconnect)
 
         self.register_plugin("xep_0030")  # Service Discovery
+        self.register_plugin("xep_0045")  # Multi-User Chat
         self.register_plugin("xep_0066")  # Out-of-Band Data (images)
         self.register_plugin("xep_0199")  # Ping
         self.register_plugin("xep_0363")  # HTTP File Upload
@@ -456,6 +500,170 @@ class OrchestratorBot(slixmpp.ClientXMPP):
     async def _reconnect(self):
         await asyncio.sleep(5)
         self.connect(self._server_addr)
+
+    # ── MUC Room Management ──────────────────────────────────
+
+    def _room_slug(self, task_id: int, task_text: str) -> str:
+        """Generate a room JID slug from task ID and description."""
+        # Sanitize task text into a short slug
+        slug = re.sub(r"[^a-z0-9]+", "-", task_text.lower()[:40]).strip("-")
+        slug = slug[:30]  # keep it short
+        return f"task-{task_id}-{slug}" if slug else f"task-{task_id}"
+
+    async def _create_task_room(self, task_id: int, task_text: str) -> str:
+        """Create a MUC room for a task, join it, invite the user.
+
+        Returns the room JID.
+        """
+        slug = self._room_slug(task_id, task_text)
+        room_jid = f"{slug}@{MUC_DOMAIN}"
+
+        try:
+            # Join the room (creates it since it doesn't exist)
+            await self["xep_0045"].join_muc(room_jid, "orchestrator")
+            log.info("Joined room %s", room_jid)
+
+            # Configure the room (send an empty form to accept defaults)
+            try:
+                form = await self["xep_0045"].get_room_config(room_jid)
+                # Set room name to the task description
+                form["values"]["muc#roomconfig_roomname"] = f"Task #{task_id}"
+                form["values"]["muc#roomconfig_persistentroom"] = True
+                form["values"]["muc#roomconfig_membersonly"] = True
+                form["values"]["muc#roomconfig_whois"] = "anyone"
+                await self["xep_0045"].set_room_config(room_jid, form)
+            except Exception as e:
+                log.debug("Room config failed (may be pre-configured): %s", e)
+
+            # Set the room subject
+            subject = task_text[:200]
+            self.send_message(mto=room_jid, mbody="", msubject=subject, mtype="groupchat")
+
+            # Invite the user
+            self["xep_0045"].invite(room_jid, ALLOWED_USER,
+                                    reason=f"Task #{task_id}: {task_text[:100]}")
+            log.info("Invited %s to %s", ALLOWED_USER, room_jid)
+
+        except Exception as e:
+            log.warning("Room creation failed: %s", e)
+            return ""
+
+        self._task_rooms[task_id] = room_jid
+        return room_jid
+
+    def _post_to_room(self, room_jid: str, text: str):
+        """Send a groupchat message to a room."""
+        if room_jid:
+            self.send_message(mto=room_jid, mbody=text, mtype="groupchat")
+
+    async def _post_screenshot_to_room(self, room_jid: str, png_bytes: bytes, caption: str = ""):
+        """Upload a screenshot and post it to a room."""
+        if not room_jid:
+            return
+        ok = await upload_and_send_image(self, room_jid, png_bytes, caption,
+                                          msg_type="groupchat")
+        if not ok:
+            self._post_to_room(room_jid, f"📸 {caption} (upload failed)")
+
+    async def on_groupchat_message(self, msg):
+        """Handle messages inside task rooms."""
+        body = (msg["body"] or "").strip()
+        if not body:
+            return
+        # Ignore our own messages
+        if msg["mucnick"] == "orchestrator":
+            return
+
+        room_jid = str(msg["from"].bare)
+        sender_nick = msg["mucnick"]
+
+        # Only handle commands
+        if not body.startswith("/"):
+            return
+
+        cmd = body.split()[0].lower()
+
+        if cmd == "/screenshot":
+            if not self._runner.is_running or not self._runner.container:
+                self._post_to_room(room_jid, "No task is running.")
+                return
+
+            self._post_to_room(room_jid, "📸 Capturing...")
+            loop = asyncio.get_running_loop()
+            png_bytes = await loop.run_in_executor(
+                None, take_container_screenshot, self._runner.container
+            )
+            if png_bytes:
+                await self._post_screenshot_to_room(room_jid, png_bytes, "Current screen")
+            else:
+                self._post_to_room(room_jid, "⚠️ Screenshot failed.")
+
+        elif cmd == "/stop":
+            if self._runner.is_running:
+                self._runner.cancel()
+                self._post_to_room(room_jid, "🛑 Cancelling task...")
+            else:
+                self._post_to_room(room_jid, "No task is running.")
+
+        elif cmd == "/status":
+            if self._runner.is_running:
+                elapsed = time.monotonic() - self._runner.start_time
+                self._post_to_room(
+                    room_jid,
+                    f"🔄 Step {self._runner.step}, {elapsed:.0f}s elapsed"
+                )
+            else:
+                self._post_to_room(room_jid, "💤 Task finished.")
+
+    # ── Update Worker ────────────────────────────────────────
+
+    async def _room_update_worker(self, room_jid: str):
+        """Poll the TaskRunner's update queue and post to the room.
+
+        Runs as an async task alongside _run_task. Exits when the
+        runner finishes (update_queue gets a 'done' sentinel).
+        """
+        while True:
+            try:
+                update = self._runner._update_queue.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.5)
+                # Check if runner finished
+                if not self._runner.is_running:
+                    break
+                continue
+
+            kind = update.get("kind")
+
+            if kind == "step":
+                step = update.get("step", "?")
+                self._post_to_room(room_jid, f"── Step {step} ──")
+
+            elif kind == "command":
+                cmd = update.get("command", "")
+                step = update.get("step", "?")
+                # Format the command nicely
+                if cmd.startswith("cua-click"):
+                    self._post_to_room(room_jid, f"🖱️ {cmd}")
+                elif cmd.startswith("cua-type"):
+                    self._post_to_room(room_jid, f"⌨️ {cmd}")
+                elif cmd.startswith("cua-scroll"):
+                    self._post_to_room(room_jid, f"📜 {cmd}")
+                elif cmd.startswith("cua-key"):
+                    self._post_to_room(room_jid, f"⌨️ {cmd}")
+                elif cmd.startswith("cua-done"):
+                    self._post_to_room(room_jid, f"✅ {cmd}")
+                else:
+                    self._post_to_room(room_jid, f"▶️ {cmd}")
+
+            elif kind == "error":
+                msg = update.get("message", "Unknown error")
+                self._post_to_room(room_jid, f"⚠️ {msg}")
+
+            elif kind == "screenshot_included":
+                self._post_to_room(room_jid, "📸 Screenshot will be attached to result")
+
+    # ── Message Handling ─────────────────────────────────────
 
     async def on_message(self, msg):
         if msg["type"] not in ("chat", "normal"):
@@ -676,23 +884,42 @@ class OrchestratorBot(slixmpp.ClientXMPP):
             )
 
     async def _run_task(self, entry: dict):
-        """Spawn an agent container and relay the result."""
+        """Spawn an agent container, create a task room, and relay results."""
         task = entry["task"]
         sender = entry["sender"]
         task_id = entry["id"]
 
-        # Acknowledge
-        self.send_message(
-            mto=sender,
-            mbody=f"🚀 Starting task #{task_id}: {task[:100]}",
-            mtype="chat",
-        )
+        # Create a MUC room for this task
+        room_jid = await self._create_task_room(task_id, task)
+        self._active_room = room_jid
+
+        # Acknowledge in direct chat
+        if room_jid:
+            self.send_message(
+                mto=sender,
+                mbody=f"🚀 Starting task #{task_id}: {task[:100]}\n"
+                      f"Follow progress in: {room_jid}",
+                mtype="chat",
+            )
+            # Post to room
+            self._post_to_room(room_jid, f"🚀 Task #{task_id}: {task}")
+        else:
+            self.send_message(
+                mto=sender,
+                mbody=f"🚀 Starting task #{task_id}: {task[:100]}",
+                mtype="chat",
+            )
 
         # Set presence to busy
         queue_note = f" ({len(self._queue)} queued)" if self._queue else ""
         self.send_presence(pshow="dnd", pstatus=f"Running #{task_id}{queue_note}")
 
-        # Run in background
+        # Start the room update worker (polls TaskRunner for updates)
+        update_task = None
+        if room_jid:
+            update_task = asyncio.ensure_future(self._room_update_worker(room_jid))
+
+        # Run the agent
         try:
             result = await self._runner.run(task, sender)
         except Exception as e:
@@ -705,6 +932,14 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                 "steps": 0,
                 "elapsed": 0,
             }
+
+        # Stop the update worker
+        if update_task:
+            update_task.cancel()
+            try:
+                await update_task
+            except asyncio.CancelledError:
+                pass
 
         # Format result message
         if result["outcome"] == "completed":
@@ -723,15 +958,31 @@ class OrchestratorBot(slixmpp.ClientXMPP):
                 f"Ran for {result['steps']} steps in {result['elapsed']}s."
             )
 
+        # Post result to direct chat
         self.send_message(mto=sender, mbody=reply, mtype="chat")
+
+        # Post result to room
+        if room_jid:
+            self._post_to_room(room_jid, reply)
 
         # Send screenshot if included in result
         if result.get("screenshot_b64"):
             try:
                 png_bytes = base64.b64decode(result["screenshot_b64"])
+                # Send to direct chat
                 await self._send_screenshot(sender, png_bytes, "Final screen state")
+                # Send to room
+                if room_jid:
+                    await self._post_screenshot_to_room(
+                        room_jid, png_bytes, "Final screen state"
+                    )
             except Exception as e:
                 log.warning("Failed to send result screenshot: %s", e)
+
+        # Leave the room (orchestrator's work is done)
+        if room_jid:
+            self._post_to_room(room_jid, "── Task complete ──")
+            self._active_room = ""
 
         # Process next task in queue
         await self._process_queue()
