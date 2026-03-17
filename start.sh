@@ -30,6 +30,35 @@ eval $(dbus-launch --sh-syntax)
 x11vnc -display "${DISPLAY}" -forever -nopw -rfbport 5900 -bg -q
 echo "VNC available on port 5900"
 
+# ── Port forwarding (benchmark mode) ─────────────────────────────
+# CUA_PORT_FORWARDS maps localhost ports to WebArena site containers
+# so that sites' hardcoded base URLs (e.g. http://localhost:7770)
+# work from inside the agent container.
+# Format: "7770:shopping:80,7780:shopping_admin:80,..."
+if [ -n "${CUA_PORT_FORWARDS:-}" ]; then
+    IFS=',' read -ra FORWARDS <<< "$CUA_PORT_FORWARDS"
+    for fwd in "${FORWARDS[@]}"; do
+        IFS=':' read -r LOCAL_PORT REMOTE_HOST REMOTE_PORT <<< "$fwd"
+        socat "TCP-LISTEN:${LOCAL_PORT},fork,reuseaddr" \
+              "TCP:${REMOTE_HOST}:${REMOTE_PORT}" &
+        echo "Forward: localhost:${LOCAL_PORT} → ${REMOTE_HOST}:${REMOTE_PORT}"
+    done
+    sleep 1
+fi
+
+# Always start Chromium with the calibration page.  After calibration
+# (cached or fresh), agent.py reads CUA_START_URL and navigates there.
+START_URL="file:///app/calibration/index.html"
+
+# Optional HTTP proxy (mitmproxy for HAR capture)
+# --proxy-bypass-list=<-loopback> forces localhost traffic through
+# the proxy too — needed because WebArena sites redirect to localhost
+# URLs and we need those requests in the HAR trace.
+PROXY_ARGS=""
+if [ -n "${CUA_HTTP_PROXY:-}" ]; then
+    PROXY_ARGS="--proxy-server=$CUA_HTTP_PROXY --proxy-bypass-list=<-loopback>"
+fi
+
 # Chromium — note: just "chromium" on Debian, not "chromium-browser"
 chromium \
     --start-fullscreen \
@@ -42,7 +71,8 @@ chromium \
     --test-type \
     --window-size="${SCREEN_WIDTH},${SCREEN_HEIGHT}" \
     --start-maximized \
-    "file:///app/calibration/index.html" 2>/dev/null &
+    $PROXY_ARGS \
+    "$START_URL" 2>/dev/null &
 sleep 2
 
 if [ "$1" = "agent" ]; then

@@ -35,7 +35,7 @@ cfg = load_config()
 SCREEN_W = cfg.getint("screen", "width")
 SCREEN_H = cfg.getint("screen", "height")
 
-MAX_STEPS = cfg.getint("agent", "max_steps")
+MAX_STEPS = int(os.environ.get("CUA_MAX_STEPS", cfg.getint("agent", "max_steps")))
 POST_ACTION_DELAY = cfg.getfloat("agent", "post_action_delay")
 
 LLM_MAX_TOKENS = cfg.getint("llm", "max_tokens")
@@ -75,6 +75,15 @@ Available CLI tools (run any with --help for usage):
 You may also run arbitrary shell commands (ls, cat, curl, grep, etc.).
 Coordinates are in your pixel space — calibration mapping is automatic.
 
+Form interaction tips:
+- Click a field BEFORE typing into it — cua-type sends keystrokes to
+  whatever element has focus, which may not be the field you expect.
+- Use Tab to move between fields (e.g. username → password) and
+  Enter to submit. This is often faster and more reliable than
+  clicking each field.
+- Check which field is focused (look for blinking cursor or highlight)
+  before typing.
+
 When the task is complete, use the cua-done tool with a summary.
 When asked to find or report a value, pass it via --result.
 When the task involves showing something visual, add --screenshot to
@@ -87,6 +96,10 @@ Examples:
   run: cua-done "Opened Wikipedia" --result "https://en.wikipedia.org"
   run: cua-done "Here is the page" --screenshot
   run: cat /etc/os-release | head -5
+
+Login example (click username field, type, Tab to password, type, Enter):
+  run: cua-click 450 250
+  run: cua-type "myuser" && cua-key Tab && cua-type "mypass" && cua-key Return
 """
 
 
@@ -228,7 +241,12 @@ def default_extract_command(ctx: dict, text: str) -> str:
         if stripped.lower().startswith("run:"):
             command = stripped[4:].strip()
             if command:
-                return command
+                # Fix models that write "cua-type X && run: cua-click Y"
+                # — strip the erroneous "run:" mid-chain so the shell
+                # gets "cua-type X && cua-click Y" which works fine.
+                command = re.sub(r'\s*&&\s*run:\s*', ' && ', command)
+                command = re.sub(r'\s*;\s*run:\s*', ' ; ', command)
+                return command.strip()
 
     raise ValueError("No 'run: <command>' line found in response")
 
@@ -334,17 +352,20 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     MAX_CAL_ATTEMPTS = 3    # retry if verification fails
 
     existing_cal = load_calibration(cfg)
+    start_url = os.environ.get("CUA_START_URL", "")
+
     if existing_cal is not None:
         print(f"\n── Calibration (cached) ──")
         print(f"   scale=({existing_cal['scale_x']:.4f}, {existing_cal['scale_y']:.4f})")
-        # Exit fullscreen and dismiss the calibration page
+        # Navigate to the task start URL (or about:blank if not set)
         run_command("cua-key F11")
         time.sleep(0.3)
         run_command("cua-key ctrl+l")
         time.sleep(0.1)
-        run_command('cua-type "about:blank"')
+        nav_url = start_url or "about:blank"
+        run_command(f'cua-type "{nav_url}"')
         run_command("cua-key Return")
-        time.sleep(0.5)
+        time.sleep(3 if start_url else 0.5)
     else:
         print("\n── Calibration (multi-step) ──")
         calibrated = False
@@ -432,14 +453,15 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             cx, cy = SCREEN_W // 2, SCREEN_H // 2
             run_command(f"cua-click {cx} {cy}")
 
-        # Exit fullscreen and dismiss calibration page
+        # Navigate to the task start URL (or about:blank if not set)
         run_command("cua-key F11")
         time.sleep(0.3)
         run_command("cua-key ctrl+l")
         time.sleep(0.1)
-        run_command('cua-type "about:blank"')
+        nav_url = start_url or "about:blank"
+        run_command(f'cua-type "{nav_url}"')
         run_command("cua-key Return")
-        time.sleep(0.5)
+        time.sleep(3 if start_url else 0.5)
 
     # Reset context — drop calibration exchange so the model starts fresh
     # and doesn't treat the calibration click as the user's actual task.
