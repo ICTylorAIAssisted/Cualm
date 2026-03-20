@@ -291,6 +291,11 @@ def spawn_agent(
         "CUA_PORT_FORWARDS": port_forwards,
         "PYTHONUNBUFFERED": "1",
     }
+    # Forward optional LLM tuning env vars
+    for var in ("CUA_TEMPERATURE", "CUA_LLM_EXTRA_PARAMS", "CUA_HISTORY_PAIRS"):
+        val = os.environ.get(var)
+        if val:
+            env[var] = val
 
     # ── HAR capture: start proxy sidecar ──
     har_proxy = None
@@ -447,6 +452,164 @@ def spawn_agent(
     }
 
 
+# ── Human mode ────────────────────────────────────────────────────
+
+
+def spawn_human(
+    client: docker.DockerClient,
+    task: dict,
+    args: argparse.Namespace,
+    gateway_ip: str | None = None,
+) -> dict:
+    """Start a container for manual task completion via VNC.
+
+    Opens the browser, prints the task and credentials, waits for the
+    human to enter a result via stdin, then tears down the container.
+    Supports HAR capture and WA-Verified evaluation.
+    """
+    task_id = task["task_id"]
+    name = f"bench-human-{task_id}-{int(time.time())}"
+    host_target = gateway_ip or "host-gateway"
+    start_url = task["resolved_start_url"]
+    sites = task.get("sites", [])
+    needs_login = task.get("require_login", False)
+
+    port_forwards = ",".join(
+        f"{lport}:{host}:{rport}"
+        for lport, (host, rport) in sorted(SITE_PORT_FORWARDS.items())
+    )
+
+    env = {
+        "CUA_START_URL": start_url,
+        "CUA_PORT_FORWARDS": port_forwards,
+        "PYTHONUNBUFFERED": "1",
+    }
+
+    # ── HAR capture: start proxy sidecar ──
+    har_proxy = None
+    har_path = None
+    if args.har_capture:
+        from har import HarProxy
+        har_proxy = HarProxy(
+            client=client,
+            task_id=task_id,
+            network=args.network,
+            output_dir=Path(args.output_dir),
+            port_forwards=dict(SITE_PORT_FORWARDS),
+            host_target=host_target,
+        )
+        try:
+            har_proxy.start()
+            env["CUA_HTTP_PROXY"] = har_proxy.proxy_url
+            print(f"    HAR proxy: {har_proxy.proxy_url}")
+        except Exception as e:
+            print(f"    ⚠ Failed to start HAR proxy: {e}")
+            har_proxy = None
+
+    t0 = time.monotonic()
+
+    try:
+        container = client.containers.run(
+            image=args.agent_image,
+            # No "agent" arg — start.sh starts Xvfb, Chromium, VNC
+            # and waits with tail -f /dev/null
+            name=name,
+            environment=env,
+            network=args.network,
+            extra_hosts={"host.docker.internal": host_target},
+            ports={"5900/tcp": args.vnc_port},
+            detach=True,
+            mem_limit="2g",
+            shm_size="256m",
+        )
+    except Exception as e:
+        if har_proxy:
+            har_proxy.cleanup()
+        return {
+            "task_id": task_id,
+            "outcome": "error",
+            "summary": f"Failed to start container: {e}",
+            "result": None,
+            "steps": 0,
+            "elapsed": 0,
+        }
+
+    # Print task info for the human
+    eval_info = task.get("eval", {})
+    ref = eval_info.get("reference_answers", {})
+    must_include = ref.get("must_include", [])
+    exact = ref.get("exact_match", "N/A")
+    eval_types = eval_info.get("eval_types", [])
+
+    print()
+    print(f"    ╔══════════════════════════════════════════════════════════")
+    print(f"    ║  HUMAN MODE — Task {task_id}")
+    print(f"    ║")
+    print(f"    ║  VNC: localhost:{args.vnc_port}")
+    print(f"    ║  URL: {start_url}")
+    print(f"    ║")
+    print(f"    ║  Task: {task['resolved_intent']}")
+    if needs_login:
+        for site in sites:
+            creds = SITE_CREDENTIALS.get(site)
+            if creds:
+                print(f"    ║  Login ({site}): {creds['username']} / {creds['password']}")
+    print(f"    ║")
+    print(f"    ║  Eval type: {', '.join(eval_types)}")
+    if must_include:
+        print(f"    ║  Expected (must include): {must_include}")
+    if isinstance(exact, str) and exact != "N/A":
+        print(f"    ║  Expected (exact match): {exact}")
+    raw_annotation = ref.get("reference_answer_raw_annotation", "")
+    if not raw_annotation:
+        raw_annotation = eval_info.get("reference_answer_raw_annotation", "")
+    if raw_annotation:
+        print(f"    ║  Raw annotation: {raw_annotation}")
+    print(f"    ║")
+    print(f"    ║  Connect via VNC, complete the task, then come back here.")
+    print(f"    ╚══════════════════════════════════════════════════════════")
+    print()
+
+    # Wait for human input
+    try:
+        result_text = input("    Enter result (or 'skip' to skip): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        result_text = ""
+
+    elapsed = time.monotonic() - t0
+
+    if result_text.lower() == "skip" or not result_text:
+        outcome = "skipped"
+        summary = "Skipped by human"
+        task_result = None
+    else:
+        outcome = "completed"
+        summary = "Completed by human"
+        task_result = result_text
+
+    # Extract HAR
+    if har_proxy:
+        har_path = har_proxy.stop_and_extract()
+        if har_path:
+            print(f"    HAR: {har_path}")
+
+    # Cleanup
+    try:
+        container.remove(force=True)
+    except Exception:
+        pass
+
+    return {
+        "task_id": task_id,
+        "outcome": outcome,
+        "summary": summary,
+        "result": task_result,
+        "steps": 0,
+        "elapsed": round(elapsed, 1),
+        "har_path": str(har_path) if har_path else None,
+    }
+
+
 # ── Report formatting ─────────────────────────────────────────────
 
 
@@ -564,15 +727,19 @@ def run_benchmark(args: argparse.Namespace) -> None:
         print(f"  WA-Verified config: {wa_config_path}")
 
     eval_mode = "webarena-verified" if args.webarena_verified else "legacy"
+    run_mode = "human" if args.human else "agent"
 
     print(f"Loaded {len(tasks)} tasks")
+    print(f"  Mode        : {run_mode}")
     print(f"  Agent image : {args.agent_image}")
-    print(f"  Model       : {args.model}")
-    print(f"  Network     : {args.network}")
-    print(f"  Max steps   : {args.max_steps}")
-    print(f"  Timeout     : {args.timeout}s")
+    if not args.human:
+        print(f"  Model       : {args.model}")
+        print(f"  Max steps   : {args.max_steps}")
+        print(f"  Timeout     : {args.timeout}s")
     print(f"  HAR capture : {args.har_capture}")
     print(f"  Evaluation  : {eval_mode}")
+    print(f"  Network     : {args.network}")
+    print(f"  VNC port    : {args.vnc_port}")
     print()
 
     # ── Signal handling for clean Ctrl+C ──
@@ -614,7 +781,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
                 f"[{i + 1}/{len(tasks)}] Task {task['task_id']}: {intent_short}"
             )
 
-            result = spawn_agent(client, task, args, gateway_ip, active_containers)
+            if args.human:
+                result = spawn_human(client, task, args, gateway_ip)
+            else:
+                result = spawn_agent(client, task, args, gateway_ip, active_containers)
 
             # ── Evaluate ──
             if args.webarena_verified:
@@ -640,11 +810,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
 
             results.append(result)
 
-            status = "PASS" if result["passed"] else "FAIL"
-            print(
-                f"  → {status} ({result['steps']} steps, "
-                f"{result['elapsed']}s, {result['outcome']})"
-            )
+            if result["outcome"] == "skipped":
+                print(f"  → SKIP ({result['elapsed']}s)")
+            else:
+                status = "PASS" if result["passed"] else "FAIL"
+                print(
+                    f"  → {status} ({result['steps']} steps, "
+                    f"{result['elapsed']}s, {result['outcome']})"
+                )
             if result.get("result"):
                 print(f"  → Result: {str(result['result'])[:120]}")
 
@@ -781,6 +954,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5900,
         help="Host port to expose agent VNC on (default: 5900)",
+    )
+    # ── Human mode ──
+    p.add_argument(
+        "--human",
+        action="store_true",
+        help="Manual mode: open VNC for each task, human completes it, "
+             "types result. Validates environment and task feasibility.",
     )
     # ── Phase 3 flags ──
     p.add_argument(

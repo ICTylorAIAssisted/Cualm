@@ -46,9 +46,14 @@ if [ -n "${CUA_PORT_FORWARDS:-}" ]; then
     sleep 1
 fi
 
-# Always start Chromium with the calibration page.  After calibration
-# (cached or fresh), agent.py reads CUA_START_URL and navigates there.
-START_URL="file:///app/calibration/index.html"
+# In agent mode, always start with the calibration page — agent.py
+# navigates to CUA_START_URL after calibration completes.
+# In non-agent mode (e.g. human testing), open CUA_START_URL directly.
+if [ "$1" = "agent" ]; then
+    START_URL="file:///app/calibration/index.html"
+else
+    START_URL="${CUA_START_URL:-file:///app/calibration/index.html}"
+fi
 
 # Optional HTTP proxy (mitmproxy for HAR capture)
 # --proxy-bypass-list=<-loopback> forces localhost traffic through

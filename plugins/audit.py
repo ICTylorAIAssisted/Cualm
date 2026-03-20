@@ -63,11 +63,49 @@ def on_post_screenshot(ctx, *, img_b64):
     ctx["audit_current_step"] = current
 
 
+def _redact_messages(messages, current_screenshot):
+    """Create a lightweight copy of messages for trace logging.
+
+    Replaces base64 image data URIs with references to saved screenshot
+    files so the trace is readable without being bloated.
+    """
+    redacted = []
+    for msg in messages:
+        content = msg.get("content")
+        if msg.get("role") == "system":
+            redacted.append({"role": "system", "content": "[system prompt]"})
+        elif isinstance(content, list):
+            parts = []
+            for part in content:
+                if part.get("type") == "image_url":
+                    parts.append({"type": "image_ref", "file": "[screenshot]"})
+                else:
+                    parts.append(part)
+            redacted.append({"role": msg["role"], "content": parts})
+        else:
+            redacted.append(msg)
+
+    # Tag the last image_ref with the current step's screenshot filename
+    if current_screenshot:
+        for msg in reversed(redacted):
+            if isinstance(msg.get("content"), list):
+                for part in reversed(msg["content"]):
+                    if part.get("type") == "image_ref":
+                        part["file"] = current_screenshot
+                        break
+                break
+
+    return redacted
+
+
 def on_post_llm_call(ctx, *, messages, reply, usage):
-    """Record the LLM reply and usage for the current step."""
+    """Record the LLM input, reply, and usage for the current step."""
     current = ctx.get("audit_current_step", {})
     current["step"] = ctx.get("step", 0)
     current["timestamp"] = datetime.now().isoformat()
+    current["llm_input"] = _redact_messages(
+        messages, current.get("screenshot")
+    )
     current["llm_reply"] = reply
     current["usage"] = usage
     ctx["audit_current_step"] = current

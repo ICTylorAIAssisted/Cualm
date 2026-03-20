@@ -39,10 +39,22 @@ MAX_STEPS = int(os.environ.get("CUA_MAX_STEPS", cfg.getint("agent", "max_steps")
 POST_ACTION_DELAY = cfg.getfloat("agent", "post_action_delay")
 
 LLM_MAX_TOKENS = cfg.getint("llm", "max_tokens")
-LLM_TEMPERATURE = cfg.getfloat("llm", "temperature")
+LLM_TEMPERATURE = float(os.environ.get(
+    "CUA_TEMPERATURE", cfg.getfloat("llm", "temperature"),
+))
 MAX_API_ERRORS = cfg.getint("llm", "max_api_errors")
 MAX_PARSE_ERRORS = cfg.getint("llm", "max_parse_errors")
-MAX_HISTORY_PAIRS = cfg.getint("llm", "max_history_pairs")
+MAX_HISTORY_PAIRS = int(os.environ.get(
+    "CUA_HISTORY_PAIRS", cfg.getint("llm", "max_history_pairs"),
+))
+
+# Extra kwargs passed directly to chat.completions.create().
+# Set as JSON, e.g. CUA_LLM_EXTRA_PARAMS='{"reasoning_effort":"high"}'
+_extra_params_raw = os.environ.get("CUA_LLM_EXTRA_PARAMS", "")
+LLM_EXTRA_PARAMS: dict = {}
+if _extra_params_raw:
+    import json as _json
+    LLM_EXTRA_PARAMS = _json.loads(_extra_params_raw)
 PREAMBLE_SIZE = cfg.getint("llm", "preamble_size")
 
 MAX_OUTPUT_BYTES = cfg.getint("run", "max_output_bytes")
@@ -68,12 +80,42 @@ You control the computer by running shell commands. Each turn, think
 briefly about what to do, then write exactly one command on a line
 starting with "run: ". Everything after "run: " is executed in a shell.
 
+Be efficient — minimize the number of steps. Chain related actions in
+a single command with && when you don't need a screenshot in between:
+  run: cua-click 450 250 && cua-type "admin" && cua-key Tab && cua-type "pass" && cua-key Return
+Each step costs time, so batch actions that logically belong together.
+
 Available CLI tools (run any with --help for usage):
 
 {tools}
 
 You may also run arbitrary shell commands (ls, cat, curl, grep, etc.).
 Coordinates are in your pixel space — calibration mapping is automatic.
+
+DevTools — open it early, keep it open:
+  Consider opening DevTools (F12) as one of your first actions. Dock it
+  to the bottom or right so you can see both the page and the console.
+  With DevTools visible in every screenshot you can:
+  - Read the DOM structure directly instead of guessing element positions
+  - Run JS in the Console to extract data, fill forms, or click elements:
+      document.querySelector('#username').value = 'admin'
+      document.querySelector('form').submit()
+  - See console errors/warnings that explain why something didn't work
+  - Check network responses without navigating away
+  Prefer Console JS over repeated clicking/scrolling for data extraction
+  tasks, especially on long pages. For example:
+    document.querySelectorAll('table tr td:nth-child(2)').forEach(e => console.log(e.innerText))
+  extracts an entire table column instantly without scrolling.
+
+Page awareness:
+- Look at the scrollbar size — a small scrollbar means a very long page.
+  Don't scroll repeatedly; use Console JS or Ctrl+F instead.
+- The page extends beyond what you see. If you click a button or submit
+  a form and nothing seems to change, scroll down — the result, error
+  message, or new content may have appeared below the visible area.
+- Use End key to jump to the bottom, Home to jump to the top.
+- If you need to find something on a long page, use Ctrl+F to search
+  rather than scrolling through it manually.
 
 Form interaction tips:
 - Click a field BEFORE typing into it — cua-type sends keystrokes to
@@ -84,15 +126,43 @@ Form interaction tips:
 - Check which field is focused (look for blinking cursor or highlight)
   before typing.
 
+After each action, check the screenshot to verify it had the expected
+effect. If nothing seems to have changed, scroll down first — the
+result may be below the viewport.
+
+If what you typed differs from what the field shows, compare them
+character by character to identify what the form changed. For example:
+  Typed: "01-15-2023"  →  Field shows: "01152023"  →  Dashes were stripped
+  Typed: "admin"       →  Field shows: "adminadmin" → Field wasn't empty
+This tells you what the form expects. Adapt your approach accordingly.
+
+IMPORTANT: Never repeat an approach that already failed. If you typed a
+date with dashes and they were stripped, don't try dashes again — switch
+to a different format. Date fields vary widely across applications:
+  MM/DD/YYYY, DD/MM/YYYY, YYYY-MM-DD, 01/15/2023, Jan 15 2023, etc.
+Some fields also have date pickers, dropdowns, or separate month/day/year
+inputs. Look at the field's placeholder text or nearby labels for hints
+about the expected format. If typing doesn't work, try clicking the field
+to see if a date picker appears.
+
+When clearing a field to retry, use Ctrl+A then Delete (or triple-click
+to select all, then type the replacement).
+
 When the task is complete, use the cua-done tool with a summary.
 When asked to find or report a value, pass it via --result.
 When the task involves showing something visual, add --screenshot to
 include a capture of the current screen in the result.
+You will see the output of your previous command alongside each new
+screenshot. Read it carefully — it tells you what actually happened
+(e.g. "Scrolled up" when you meant to scroll down).
+
 {extra}
 Examples:
   run: cua-click 450 300
   run: cua-type "hello world"
   run: cua-key ctrl+a
+  run: cua-scroll 500 400 --clicks 5              (scroll DOWN to see more)
+  run: cua-scroll 500 400 --up --clicks 3          (scroll UP to go back)
   run: cua-done "Opened Wikipedia" --result "https://en.wikipedia.org"
   run: cua-done "Here is the page" --screenshot
   run: cat /etc/os-release | head -5
@@ -100,6 +170,11 @@ Examples:
 Login example (click username field, type, Tab to password, type, Enter):
   run: cua-click 450 250
   run: cua-type "myuser" && cua-key Tab && cua-type "mypass" && cua-key Return
+
+DevTools example (open devtools, switch to console, extract data via JS):
+  run: cua-key F12
+  run: cua-click <console tab>
+  run: cua-type "document.querySelector('.bestseller .name').innerText" && cua-key Return
 """
 
 
@@ -144,11 +219,40 @@ def default_llm_call(ctx: dict, messages: list[ChatCompletionMessageParam]) -> s
         max_tokens=LLM_MAX_TOKENS,
         messages=messages,
         temperature=LLM_TEMPERATURE,
+        extra_body=LLM_EXTRA_PARAMS or None,
     )
     elapsed = time.monotonic() - t0
 
     content = response.choices[0].message.content
     if content is None:
+        content = ""
+
+    # Some backends (llama.cpp, vLLM, Lemonade) return thinking tokens
+    # in a separate field instead of inline in content.  The OpenAI SDK
+    # may not expose unknown fields via getattr, so also check model_extra.
+    msg = response.choices[0].message
+    reasoning = (
+        getattr(msg, "reasoning_content", None)
+        or getattr(msg, "reasoning", None)
+    )
+    if not reasoning:
+        extra = getattr(msg, "model_extra", None) or {}
+        reasoning = extra.get("reasoning_content") or extra.get("reasoning")
+
+    # One-time debug: log available message fields on first call
+    if not getattr(default_llm_call, "_fields_logged", False):
+        default_llm_call._fields_logged = True
+        known = [k for k in dir(msg) if not k.startswith("_")]
+        extra_keys = list((getattr(msg, "model_extra", None) or {}).keys())
+        print(f"   [debug] Message fields: {known}")
+        if extra_keys:
+            print(f"   [debug] Extra fields: {extra_keys}")
+        print(f"   [debug] Reasoning captured: {bool(reasoning)}")
+
+    if reasoning:
+        content = f"<think>{reasoning}</think>\n{content}"
+
+    if not content.strip():
         raise ValueError("LLM returned empty content")
 
     # Stash usage info for the hook
@@ -224,10 +328,20 @@ def default_extract_command(ctx: dict, text: str) -> str:
     """
     text = text.strip()
 
-    # Strip <think>…</think> blocks (Qwen, DeepSeek, etc.)
+    # Strip thinking wrapper tags from various models.
+    # For <think>/[THINK]: discard the content (it's internal reasoning)
+    # For <nothink>: keep the content (it's the actual response, Phi4)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"\[THINK\].*?\[/THINK\]", "", text, flags=re.DOTALL)
+    # Handle unclosed thinking tags (model started but didn't close)
     if "</think>" in text:
         text = text.split("</think>")[-1]
+    if "[/THINK]" in text:
+        text = text.split("[/THINK]")[-1]
+    # Strip all tag markers (opening/closing), keeping content between
+    # nothink tags intact since it IS the response
+    text = re.sub(r"</?(?:no)?think>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[/?THINK\]", "", text)
     text = text.strip()
 
     # Strip markdown fences if the whole response is wrapped
@@ -319,6 +433,10 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     plugins.emit("on_startup", ctx)
 
     print(f"🤖 Task: {task}")
+    if LLM_EXTRA_PARAMS:
+        print(f"   LLM params: temperature={LLM_TEMPERATURE}, {LLM_EXTRA_PARAMS}")
+    elif LLM_TEMPERATURE != 0:
+        print(f"   LLM temperature: {LLM_TEMPERATURE}")
 
     # ── Build system prompt (after plugins had a chance to add tools) ──
     system_prompt = build_system_prompt(ctx)
@@ -468,6 +586,8 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     messages = [make_system_msg(system_prompt)]
 
     # ── Main loop ──
+    last_command = ""
+    last_output = ""
     for step in range(max_steps):
         ctx["step"] = step + 1
         print(f"\n── Step {step + 1} ──")
@@ -485,7 +605,7 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         prompt = (
             f"Task: {task}"
             if step == 0
-            else "Here is the updated screenshot. Continue with the task."
+            else f"Command: {last_command}\nOutput: {last_output}\n\nHere is the updated screenshot. Continue with the task."
         )
         messages.append(make_user_msg(img_b64, prompt))
 
@@ -531,6 +651,10 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         output = run_command(command)
         plugins.emit("on_post_command", ctx, command=command, output=output)
         print(f"   Output: {output[:300]}{'…' if len(output) > 300 else ''}")
+
+        # Store for next iteration's user message
+        last_command = command
+        last_output = output[:500]  # Truncate for context window
 
         # ── Check for done marker ──
         if DONE_MARKER in output:
