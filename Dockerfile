@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DISPLAY=:99
 ENV SCREEN_WIDTH=1280
-ENV SCREEN_HEIGHT=800
+ENV SCREEN_HEIGHT=720
 ENV SCREEN_DEPTH=24
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,12 +31,14 @@ RUN pip install --break-system-packages -r /app/requirements.txt
 
 COPY start.sh /app/start.sh
 COPY agent.py /app/agent.py
+COPY cdp_a11y.py /app/cdp_a11y.py
 COPY cua_config.py /app/cua_config.py
 COPY plugin_host.py /app/plugin_host.py
 COPY tool_discovery.py /app/tool_discovery.py
 COPY config.ini /app/config.ini
 COPY tools /app/tools
 COPY plugins /app/plugins
+COPY extensions /app/extensions
 COPY example /app/example
 COPY calibration /app/calibration
 

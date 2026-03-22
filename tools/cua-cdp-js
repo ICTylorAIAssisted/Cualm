@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Execute JavaScript in the browser via Chrome DevTools Protocol.
+
+Connects to Chromium's CDP endpoint to evaluate JS expressions in the
+active page context. This is equivalent to typing in the DevTools Console
+but without the GUI overhead.
+
+Use for fast data extraction, form manipulation, and page inspection:
+  cua-cdp-js "document.title"
+  cua-cdp-js "document.querySelector('h1').innerText"
+  cua-cdp-js "[...document.querySelectorAll('table tr')].map(r => r.innerText).join('\\n')"
+  cua-cdp-js "document.querySelector('#status').value"
+  cua-cdp-js "document.querySelector('#status').value = 'active'"
+
+Requires Chromium launched with --remote-debugging-port=9222.
+"""
+
+import json
+import sys
+import urllib.request
+from typing import Optional
+
+import typer
+import websocket
+
+app = typer.Typer(add_completion=False)
+
+CDP_HOST = "127.0.0.1"
+CDP_PORT = 9222
+
+
+def _get_page_ws_url() -> str:
+    """Get the websocket URL for the first non-extension browser tab."""
+    url = f"http://{CDP_HOST}:{CDP_PORT}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            tabs = json.loads(resp.read())
+    except Exception as e:
+        raise RuntimeError(
+            f"Cannot connect to CDP at {url} — is Chromium running with "
+            f"--remote-debugging-port={CDP_PORT}?"
+        ) from e
+
+    # Find the first page (not extension, devtools, etc.)
+    for tab in tabs:
+        if tab.get("type") == "page" and not tab.get("url", "").startswith(
+            ("chrome-extension://", "devtools://", "chrome://")
+        ):
+            ws_url = tab.get("webSocketDebuggerUrl")
+            if ws_url:
+                return ws_url
+
+    # Fallback: just use the first page tab
+    for tab in tabs:
+        if tab.get("type") == "page":
+            ws_url = tab.get("webSocketDebuggerUrl")
+            if ws_url:
+                return ws_url
+
+    raise RuntimeError(
+        f"No suitable browser tab found. Tabs: "
+        f"{[t.get('url', '?') for t in tabs]}"
+    )
+
+
+def _evaluate(expression: str, timeout: int = 10, await_promise: bool = False) -> dict:
+    """Send Runtime.evaluate via CDP websocket and return the result."""
+    ws_url = _get_page_ws_url()
+    ws = websocket.create_connection(ws_url, timeout=timeout)
+    try:
+        msg = {
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": await_promise,
+                "timeout": timeout * 1000,
+            },
+        }
+        ws.send(json.dumps(msg))
+        # Read responses until we get id=1
+        while True:
+            raw = ws.recv()
+            resp = json.loads(raw)
+            if resp.get("id") == 1:
+                return resp
+    finally:
+        ws.close()
+
+
+def _format_result(resp: dict) -> str:
+    """Format CDP response into readable output."""
+    if "error" in resp:
+        return f"CDP error: {resp['error'].get('message', resp['error'])}"
+
+    result = resp.get("result", {}).get("result", {})
+    exception = resp.get("result", {}).get("exceptionDetails")
+
+    if exception:
+        exc_text = exception.get("text", "")
+        exc_obj = exception.get("exception", {})
+        desc = exc_obj.get("description", exc_obj.get("value", ""))
+        return f"JS Error: {desc or exc_text}"
+
+    rtype = result.get("type", "")
+    subtype = result.get("subtype", "")
+
+    if subtype == "null" or rtype == "undefined":
+        return str(result.get("value", rtype))
+
+    value = result.get("value")
+    if value is not None:
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, indent=2, ensure_ascii=False)
+
+    # For non-serializable objects, return description
+    return result.get("description", str(result))
+
+
+@app.command()
+def cdp_js(
+    expression: str = typer.Argument(
+        None, help="JS expression, or '-' to read from stdin/heredoc"
+    ),
+    timeout: int = typer.Option(10, "--timeout", "-t", help="Timeout in seconds"),
+    await_promise: bool = typer.Option(
+        False, "--await", "-a", help="Await if expression returns a Promise"
+    ),
+    raw: bool = typer.Option(
+        False, "--raw", help="Output raw CDP JSON response"
+    ),
+) -> None:
+    """Evaluate a JavaScript expression in the browser page context.
+
+    \b
+    Simple (shell quoting OK):
+      cua-cdp-js "document.title"
+      cua-cdp-js "document.querySelector('h1').innerText"
+
+    Complex quoting (use heredoc to avoid shell escaping):
+      cua-cdp-js - << 'JS'
+      document.querySelector('input[placeholder="Search by name"]').value = "test"
+      JS
+    """
+    import sys as _sys
+
+    # Read from stdin if expression is "-" or not provided
+    if expression == "-" or expression is None:
+        if _sys.stdin.isatty():
+            typer.echo("No expression provided. Pass JS as argument or pipe via stdin.", err=True)
+            raise typer.Exit(1)
+        expression = _sys.stdin.read().strip()
+
+    if not expression:
+        typer.echo("Empty expression", err=True)
+        raise typer.Exit(1)
+
+    try:
+        resp = _evaluate(expression, timeout=timeout, await_promise=await_promise)
+    except RuntimeError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    except websocket.WebSocketTimeoutException:
+        typer.echo(f"Timeout after {timeout}s waiting for JS result", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"CDP connection error: {e}", err=True)
+        raise typer.Exit(1)
+
+    if raw:
+        typer.echo(json.dumps(resp, indent=2))
+    else:
+        typer.echo(_format_result(resp))
+
+
+if __name__ == "__main__":
+    app()

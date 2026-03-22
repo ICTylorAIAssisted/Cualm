@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "CUA HUD",
+  "version": "1.0.0",
+  "description": "Thin status bar for CUA agent — shows scroll position, page info, and focused element.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["hud.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
-"""Wait (sleep) for a specified duration."""
+"""Wait briefly for a page to load after an action.
+
+Default: 500ms. Usually sufficient for AJAX updates and page renders.
+Use only when you know the page is loading (dom: indicator shows activity).
+
+Examples:
+  cua-wait              wait 500ms (default)
+  cua-wait 200          wait 200ms
+  cua-wait 1000         wait 1s (max recommended)
+"""
 
 import time
-from typing import Optional
 
 import typer
 
-from cua_config import load_config
-
 app = typer.Typer(add_completion=False)
+
+MAX_WAIT_MS = 3000  # hard cap
 
 
 @app.command()
 def cua_wait(
-    ms: int = typer.Argument(None, help="Duration in milliseconds"),
-    seconds: Optional[float] = typer.Option(
-        None, "--seconds", "-s", help="Duration in seconds (overrides ms)"
-    ),
+    ms: int = typer.Argument(500, help="Duration in milliseconds (default 500, max 3000)"),
 ) -> None:
-    """Sleep for a given duration.
+    """Wait for a page to load or animation to complete."""
+    if ms > MAX_WAIT_MS:
+        typer.echo(f"Capped wait from {ms}ms to {MAX_WAIT_MS}ms (use cua-cdp-js to check page state instead of long waits)")
+        ms = MAX_WAIT_MS
+    if ms < 0:
+        ms = 0
 
-    Defaults to the value in config.ini [agent] wait_default_ms.
-    """
-    cfg = load_config()
-
-    if seconds is not None:
-        dur = seconds
-    elif ms is not None:
-        dur = ms / 1000.0
-    else:
-        dur = cfg.getint("agent", "wait_default_ms") / 1000.0
-
+    dur = ms / 1000.0
     time.sleep(dur)
-    typer.echo(f"Waited {dur:.3f}s")
+    typer.echo(f"Waited {ms}ms")
 
 
 if __name__ == "__main__":

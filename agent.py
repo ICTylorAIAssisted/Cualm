@@ -23,6 +23,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from cua_config import load_config, calibration_file_for_model, load_calibration
+from cdp_a11y import get_a11y_text
 from plugin_host import PluginHost
 from tool_discovery import discover_tools
 
@@ -94,16 +95,15 @@ Each step costs time, so batch actions that logically belong together.
 
 Planning:
   On your FIRST step, create a plan before doing anything else.
-  Use | to separate steps (keeps everything on one line):
-    run: cua-plan "Login to admin | Navigate to Reports | Set date to 2022 | Read top product | Report with cua-done"
-  As you complete steps, mark them done (use commas for multiple):
-    run: cua-plan --complete 1 --note "Logged in"
-    run: cua-plan --complete 4,5 --note "Found and reported"
-  Do NOT mark a step done until its result is fully visible/confirmed.
-  If a step is complex, expand it into sub-steps BEFORE working on it:
-    run: cua-plan --expand 3 "Scroll to table | Read top row | Note product name"
-  If a step fails and you need a different approach, replan:
-    run: cua-plan --replan "[DONE] Login | Use DevTools instead | Report result"
+  Use | to separate steps. Rewrite the FULL plan each time to update:
+    run: cua-plan "Login | Navigate to reports | Filter data | Read results | Report answer"
+  After completing a step, rewrite with [DONE] markers:
+    run: cua-plan "[DONE] Login | Navigate to reports | Filter data | Read results | Report answer"
+  To restructure (add/remove/split steps), just rewrite the whole plan:
+    run: cua-plan "[DONE] Login | [DONE] Navigate | Set date range | Choose grouping | Click generate | Read results | Report answer"
+  If a step fails, mark it [FAIL] and add a new approach:
+    run: cua-plan "[DONE] Login | [DONE] Navigate | [FAIL] Click generate | Use JS to extract data | Report answer"
+  Do NOT mark a step [DONE] until its result is fully visible/confirmed.
   Your current plan is shown with each screenshot — use it to stay
   on track and avoid repeating failed approaches.
 
@@ -114,24 +114,54 @@ Available CLI tools (run any with --help for usage):
 You may also run arbitrary shell commands (ls, cat, curl, grep, etc.).
 Coordinates are in your pixel space — calibration mapping is automatic.
 
-DevTools — open it early, keep it open:
-  Consider opening DevTools (F12) as one of your first actions. Dock it
-  to the bottom or right so you can see both the page and the console.
-  With DevTools visible in every screenshot you can:
-  - Read the DOM structure directly instead of guessing element positions
-  - Run JS in the Console to extract data, fill forms, or click elements:
-      document.querySelector('#username').value = 'admin'
-      document.querySelector('form').submit()
-  - See console errors/warnings that explain why something didn't work
-  - Check network responses without navigating away
-  Prefer Console JS over repeated clicking/scrolling for data extraction
-  tasks, especially on long pages. For example:
-    document.querySelectorAll('table tr td:nth-child(2)').forEach(e => console.log(e.innerText))
-  extracts an entire table column instantly without scrolling.
+Browser JS (cua-cdp-js) — fast data extraction:
+  Use cua-cdp-js to run JavaScript directly in the page without opening
+  DevTools. This is the fastest way to read page content, check form
+  values, inspect dropdowns, and extract data from tables:
+    run: cua-cdp-js "document.title"
+    run: cua-cdp-js "document.querySelector('h1').innerText"
+    run: cua-cdp-js "document.querySelector('select').value"
+    run: cua-cdp-js "[...document.querySelectorAll('select option')].map(o => (o.selected ? '> ' : '  ') + o.text).join('\n')"
+    run: cua-cdp-js "[...document.querySelectorAll('table tbody tr')].slice(0,5).map(r => r.innerText).join('\n')"
+  Use it to check dropdown values and options BEFORE clicking blindly.
+  Use it to read table data instead of scrolling through long pages.
+  You can also SET values:
+    run: cua-cdp-js "document.querySelector('select#sort').value = 'price'"
+    run: cua-cdp-js "document.querySelector('input#email').value = 'test@example.com'"
+  For complex selectors with nested quotes, use a heredoc:
+    run: cua-cdp-js - << 'JS'
+    document.querySelector('input[placeholder="Search by name"]').value = "test"
+    JS
+
+  For visual debugging (CSS issues, layout), open DevTools with F12.
+  Dock it to the bottom or right so you can see both page and console.
+
+Status bar (bottom of screen):
+  A thin bar at the bottom of every page shows:
+    scroll: 45% ↓1200px left │ page: 3400px (4.2 screens) │ dom: changed 2s ago │ focus: input#email │ url: /settings/profile
+  Use this to check: how far you've scrolled, whether scrolling is
+  needed, which element has focus before typing, and current URL.
+  The "dom:" field shows when the page last changed — if it says
+  "changed just now" or "changed 2s ago" after clicking a button,
+  the action worked. Scroll down to see the results instead of
+  clicking again. If it says "idle" or "changed 15s ago", the click
+  may not have hit the right target.
+
+Accessibility tree (included with each screenshot):
+  A text representation of the page structure is included alongside
+  each screenshot. It shows elements with their roles, names, values,
+  and states (focused, selected, expanded, etc.). Use it to:
+  - See ALL dropdown/select options and which is selected — without
+    clicking to open the dropdown
+  - Find elements that are off-screen or hard to read in the screenshot
+  - Identify the exact text content of table cells, headings, links
+  - Check form field values and states
+  The tree is truncated for long pages — use cua-cdp-js for deeper queries.
 
 Page awareness:
-- Look at the scrollbar size — a small scrollbar means a very long page.
-  Don't scroll repeatedly; use Console JS or Ctrl+F instead.
+- Read the status bar: if "scroll: no scroll needed", the page fits.
+  If it shows e.g. "4.2 screens", prefer Console JS or Ctrl+F over
+  repeated scrolling.
 - The page extends beyond what you see. If you click a button or submit
   a form and nothing seems to change, scroll down — the result, error
   message, or new content may have appeared below the visible area.
@@ -139,36 +169,37 @@ Page awareness:
 - If you need to find something on a long page, use Ctrl+F to search
   rather than scrolling through it manually.
 
-Form interaction tips:
-- Click a field BEFORE typing into it — cua-type sends keystrokes to
-  whatever element has focus, which may not be the field you expect.
-- Use Tab to move between fields (e.g. username → password) and
-  Enter to submit. This is often faster and more reliable than
-  clicking each field.
-- Check which field is focused (look for blinking cursor or highlight)
-  before typing.
+Reports and filters:
+- When generating reports or searching with filters, check ALL filter
+  options before submitting — not just the obvious ones like date range.
+  Dropdowns for grouping, aggregation, sorting, or category are easy to
+  miss but dramatically affect results. Wrong settings can produce
+  hundreds of rows instead of a useful summary.
+
+Form interaction — clear first, verify after:
+  ALWAYS follow this sequence for each form field:
+    1. Click the field (or check focus: in status bar)
+    2. Clear it: Ctrl+A, Delete, then type the new value
+    3. Verify with cua-cdp-js: check the field actually has the right value
+  Example for a date field:
+    run: cua-click 400 300 && cua-key ctrl+a && cua-key Delete && cua-type "03/15/2024"
+    run: cua-cdp-js "document.activeElement.value"
+  If the value doesn't match what you typed, the form transformed your
+  input. Compare character by character to understand the format:
+    Typed: "01-15-2023"  →  Field shows: "01152023"  →  Dashes stripped
+    Typed: "admin"       →  Field shows: "adminadmin" → Field wasn't empty
+  When you encounter a form with multiple fields, expand your plan to
+  include filling AND verifying each field as separate sub-steps.
+  Never submit a form without verifying all fields are correct first.
+  IMPORTANT: Never repeat an approach that already failed — switch to
+  a different format or use cua-cdp-js to set the value directly.
+  Date fields vary widely: MM/DD/YYYY, YYYY-MM-DD, Jan 15 2023, etc.
+  Check placeholder text, or use cua-cdp-js to read the field's type
+  and attributes to determine the expected format.
 
 After each action, check the screenshot to verify it had the expected
 effect. If nothing seems to have changed, scroll down first — the
 result may be below the viewport.
-
-If what you typed differs from what the field shows, compare them
-character by character to identify what the form changed. For example:
-  Typed: "01-15-2023"  →  Field shows: "01152023"  →  Dashes were stripped
-  Typed: "admin"       →  Field shows: "adminadmin" → Field wasn't empty
-This tells you what the form expects. Adapt your approach accordingly.
-
-IMPORTANT: Never repeat an approach that already failed. If you typed a
-date with dashes and they were stripped, don't try dashes again — switch
-to a different format. Date fields vary widely across applications:
-  MM/DD/YYYY, DD/MM/YYYY, YYYY-MM-DD, 01/15/2023, Jan 15 2023, etc.
-Some fields also have date pickers, dropdowns, or separate month/day/year
-inputs. Look at the field's placeholder text or nearby labels for hints
-about the expected format. If typing doesn't work, try clicking the field
-to see if a date picker appears.
-
-When clearing a field to retry, use Ctrl+A then Delete (or triple-click
-to select all, then type the replacement).
 
 When the task is complete, use the cua-done tool with a summary.
 When asked to find or report a value, pass it via --result.
@@ -185,18 +216,22 @@ Examples:
   run: cua-key ctrl+a
   run: cua-scroll 500 400 --clicks 5              (scroll DOWN to see more)
   run: cua-scroll 500 400 --up --clicks 3          (scroll UP to go back)
+  run: cua-click 450 300 && cua-wait               (click then wait 500ms for page load)
   run: cua-done "Opened Wikipedia" --result "https://en.wikipedia.org"
   run: cua-done "Here is the page" --screenshot
   run: cat /etc/os-release | head -5
 
-Login example (click username field, type, Tab to password, type, Enter):
+Login example (click username, type, Tab to password, type, Enter):
   run: cua-click 450 250
   run: cua-type "myuser" && cua-key Tab && cua-type "mypass" && cua-key Return
 
-DevTools example (open devtools, switch to console, extract data via JS):
-  run: cua-key F12
-  run: cua-click <console tab>
-  run: cua-type "document.querySelector('.bestseller .name').innerText" && cua-key Return
+Form filling example (clear field, type, verify):
+  run: cua-click 400 300 && cua-key ctrl+a && cua-key Delete && cua-type "new value"
+  run: cua-cdp-js "document.activeElement.value"
+
+Data extraction example (read page content and table data via JS):
+  run: cua-cdp-js "document.title + ' — ' + document.querySelector('h1')?.innerText"
+  run: cua-cdp-js "[...document.querySelectorAll('table tbody tr')].slice(0,3).map(r => r.innerText).join('\\n')"
 """
 
 
@@ -416,10 +451,29 @@ def make_system_msg(text: str) -> ChatCompletionMessageParam:
 def trim_messages(
     messages: list[ChatCompletionMessageParam],
 ) -> list[ChatCompletionMessageParam]:
-    max_len = PREAMBLE_SIZE + MAX_HISTORY_PAIRS * 2
+    """Keep system prompt + last N user/assistant pairs.
+
+    With history_pairs=0: only system prompt survives (the loop
+    appends a fresh user message each step).
+    With history_pairs=1: system + last user/assistant exchange.
+    """
+    # Always keep the system message(s) at the start
+    sys_count = 0
+    for m in messages:
+        if m.get("role") == "system":
+            sys_count += 1
+        else:
+            break
+
+    if MAX_HISTORY_PAIRS == 0:
+        return messages[:sys_count]
+
+    # Keep sys messages + last N pairs (user+assistant = 2 msgs each)
+    keep = MAX_HISTORY_PAIRS * 2
+    max_len = sys_count + keep
     if len(messages) <= max_len:
         return messages
-    return messages[:PREAMBLE_SIZE] + messages[-(MAX_HISTORY_PAIRS * 2):]
+    return messages[:sys_count] + messages[-keep:]
 
 
 # ── Agent loop ────────────────────────────────────────────
@@ -612,8 +666,33 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     # ── Main loop ──
     last_command = ""
     last_output = ""
+    last_summary = ""  # text summary from model's think block
     command_history: list[str] = []  # track all commands for loop detection
     PLAN_FILE = "/tmp/cua_plan.json"
+
+    def _extract_summary(reply: str) -> str:
+        """Extract a brief status summary from the model's <think> block.
+
+        The model already describes what it sees in its thinking. We
+        capture this and inject it as text context on the next step,
+        replacing the expensive image-based history.
+        """
+        import re
+        # Extract think block content
+        m = re.search(r"<think>(.*?)</think>", reply, re.DOTALL)
+        if not m:
+            return ""
+        think = m.group(1).strip()
+        # Take first ~300 chars — enough to capture page state description
+        # but not the full reasoning chain
+        if len(think) > 300:
+            # Try to cut at a sentence boundary
+            cut = think[:300].rfind(". ")
+            if cut > 100:
+                think = think[:cut + 1]
+            else:
+                think = think[:300] + "…"
+        return think
 
     def _detect_loop() -> str:
         """Check if the agent is stuck repeating similar actions.
@@ -701,18 +780,37 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
         plan_text = _read_plan()
 
+        # ── Accessibility tree ──
+        t0 = time.monotonic()
+        a11y_text = get_a11y_text()
+        a11y_ms = (time.monotonic() - t0) * 1000
+        if a11y_text:
+            a11y_lines = a11y_text.count("\n")
+            print(f"   A11y tree: {a11y_lines} lines ({a11y_ms:.0f}ms)")
+
         if step == 0:
-            prompt = (
-                f"Task: {task}\n\n"
-                f"Create a plan using cua-plan with the steps needed "
-                f"to complete this task."
-            )
+            parts = [
+                f"Task: {task}",
+                "",
+                "Create a plan using cua-plan with the steps needed "
+                "to complete this task.",
+            ]
+            if a11y_text:
+                parts.append("")
+                parts.append(a11y_text)
+            prompt = "\n".join(parts)
         else:
             parts = [f"Task: {task}", ""]
+            if last_summary:
+                parts.append(f"Previous observation: {last_summary}")
+                parts.append("")
             parts.extend([f"Command: {last_command}", f"Output: {last_output}"])
             if plan_text:
                 parts.append("")
                 parts.append(plan_text)
+            if a11y_text:
+                parts.append("")
+                parts.append(a11y_text)
             loop_warning = _detect_loop()
             if loop_warning:
                 print(f"   🔄 Loop detected — injecting warning")
@@ -744,6 +842,9 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
         messages.append(make_assistant_msg(reply))
         print(f"   LLM → {reply[:200]}{'…' if len(reply) > 200 else ''}")
+
+        # Extract status summary for next step's context
+        last_summary = _extract_summary(reply)
 
         # ── Parse ──
         try:

@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """Manage a task execution plan.
 
-Create a plan, mark steps complete, or replan. The plan is stored
-in a file and automatically injected into each LLM prompt so it
-persists across the conversation history window.
+Write the full plan each time, using markers for completed steps:
+  cua-plan "Login | Navigate | Find data | Report"
+  cua-plan "[DONE] Login | [DONE] Navigate | Set date range | Report"
+  cua-plan "[DONE] Login | [DONE] Navigate | [DONE] Set date | Read table | Report"
 
-Use | to separate steps (stays on one line, no quoting issues):
-  cua-plan "Login | Navigate to Reports | Read data | Report result"
+Markers: [DONE], [FAIL], [SKIP]. Unmarked steps are pending.
+Use | to separate steps. Rewrite the entire plan each time you
+need to update progress or restructure.
 
 Usage:
-  cua-plan "Login | Navigate | Read | Report"     create plan
-  cua-plan --complete 1                            mark step 1 done
-  cua-plan --complete 2 --note "Found the page"   mark with note
-  cua-plan --fail 3 --note "Approach failed"       mark step failed
-  cua-plan --expand 3 "Scroll to table | Read top row | Note name"
-  cua-plan --replan "[DONE] Login | Use DevTools | Report"
-  cua-plan --show                                  display current plan
+  cua-plan "Step 1 | Step 2 | Step 3"                     create/update plan
+  cua-plan "[DONE] Step 1 | Step 2 | Step 3"              mark step 1 done
+  cua-plan "[DONE] Step 1 | [FAIL] Step 2 | New approach"  mark + restructure
+  cua-plan --show                                          display current plan
 """
 
 import json
 import os
-import sys
+import re
 
 import typer
 
@@ -30,10 +29,11 @@ PLAN_FILE = "/tmp/cua_plan.json"
 
 
 def _load_plan() -> dict:
-    if os.path.exists(PLAN_FILE):
+    try:
         with open(PLAN_FILE) as f:
             return json.load(f)
-    return {"steps": [], "version": 0}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"steps": [], "version": 0}
 
 
 def _save_plan(plan: dict) -> None:
@@ -44,17 +44,12 @@ def _save_plan(plan: dict) -> None:
 def _parse_steps(text: str) -> list[dict]:
     """Parse a plan string into structured steps.
 
-    Accepts multiple separator styles:
-      "Login | Navigate | Report"          pipe-separated (preferred)
-      "1. Login | 2. Navigate | 3. Report" numbered + pipe
-      "Login\\nNavigate\\nReport"           literal \\n
-      Actual newlines                       also work
+    Accepts pipe-separated or newline-separated steps.
+    Status markers: [DONE], [FAIL], [SKIP] at start of step.
     """
-    import re
-
     # Convert literal \n to real newlines
     text = text.replace("\\n", "\n")
-    # Split on pipe if no newlines present, otherwise use newlines
+    # Split on pipe if no newlines, otherwise use newlines
     if "\n" not in text.strip() and "|" in text:
         lines = [s.strip() for s in text.split("|")]
     else:
@@ -65,168 +60,88 @@ def _parse_steps(text: str) -> list[dict]:
         line = line.strip()
         if not line:
             continue
-        # Strip leading number/bullet if present
+        # Map status icons copied from plan output (○ ✓ ✗ –)
+        icon_status = None
+        for icon, st in (("✓", "done"), ("✗", "failed"), ("–", "skipped"),
+                         ("○", "pending")):
+            if line.startswith(icon):
+                icon_status = st
+                line = line[len(icon):].strip()
+                break
+        # Strip leading number/bullet
         for prefix in ("- ", "* "):
             if line.startswith(prefix):
                 line = line[len(prefix):]
                 break
-        # Strip "N. " or "N) " or "Na. " prefix
         m = re.match(r"^\d+[a-zA-Z]?[.)]\s*", line)
         if m:
             line = line[m.end():]
-        # Check for status markers
-        status = "pending"
-        if line.upper().startswith("[DONE]"):
-            status = "done"
-            line = line[6:].strip()
-        elif line.upper().startswith("[FAIL]"):
-            status = "failed"
-            line = line[6:].strip()
-        elif line.upper().startswith("[SKIP]"):
-            status = "skipped"
-            line = line[6:].strip()
+
+        # Check for text status markers (override icon if present)
+        status = icon_status or "pending"
+        for marker, st in (("[DONE]", "done"), ("[FAIL]", "failed"),
+                           ("[SKIP]", "skipped")):
+            if line.upper().startswith(marker):
+                status = st
+                line = line[len(marker):].strip()
+                break
+
+        # Strip number prefix again (handles "[DONE] 2. Navigate")
+        m = re.match(r"^\d+[a-zA-Z]?[.)]\s*", line)
+        if m:
+            line = line[m.end():]
+
         if line:
-            steps.append({"text": line, "status": status, "note": ""})
+            steps.append({"text": line, "status": status})
     return steps
 
 
 def _format_plan(plan: dict) -> str:
-    """Format the plan for display."""
-    if not plan.get("steps"):
+    steps = plan.get("steps", [])
+    if not steps:
         return "No plan set."
-    lines = [f"Plan (v{plan['version']}):"]
-    for i, step in enumerate(plan["steps"], 1):
-        status_icon = {
-            "pending": "○",
-            "done": "✓",
-            "failed": "✗",
-            "skipped": "–",
-        }.get(step["status"], "?")
-        line = f"  {status_icon} {i}. {step['text']}"
-        if step.get("note"):
-            line += f"  ({step['note']})"
-        lines.append(line)
-    # Progress summary
-    total = len(plan["steps"])
-    done = sum(1 for s in plan["steps"] if s["status"] == "done")
-    pending = sum(1 for s in plan["steps"] if s["status"] == "pending")
-    failed = sum(1 for s in plan["steps"] if s["status"] == "failed")
+    version = plan.get("version", 0)
+    total = len(steps)
+    lines = [f"Plan (v{version}):"]
+    for i, s in enumerate(steps, 1):
+        icon = {"pending": "○", "done": "✓", "failed": "✗",
+                "skipped": "–"}.get(s["status"], "?")
+        lines.append(f"  {icon} {i}. {s['text']}")
+    done = sum(1 for s in steps if s["status"] == "done")
+    pending = sum(1 for s in steps if s["status"] == "pending")
+    failed = sum(1 for s in steps if s["status"] == "failed")
     lines.append(f"  Progress: {done}/{total} done, {pending} pending, {failed} failed")
     return "\n".join(lines)
 
 
 @app.command()
 def plan(
-    text: str = typer.Argument(None, help="Plan text (steps separated by | or newlines)"),
-    complete: str = typer.Option(None, "--complete", "-c", help="Mark step(s) done (e.g. 4 or 4,5)"),
-    fail: str = typer.Option(None, "--fail", "-f", help="Mark step(s) failed (e.g. 3 or 3,4)"),
-    skip: str = typer.Option(None, "--skip", help="Mark step(s) skipped"),
-    expand: int = typer.Option(None, "--expand", "-e", help="Replace step N with sub-steps from text"),
-    note: str = typer.Option("", "--note", "-n", help="Note for --complete/--fail"),
-    replan: str = typer.Option(None, "--replan", "-r", help="Replace plan with new text"),
+    text: str = typer.Argument(None, help="Full plan with | separators and [DONE]/[FAIL] markers"),
     show: bool = typer.Option(False, "--show", "-s", help="Show current plan"),
 ) -> None:
-    """Create or update a task execution plan."""
+    """Create or update the task plan.
 
-    def _parse_step_nums(s: str) -> list[int]:
-        """Parse '4' or '4,5' into list of ints."""
-        nums = []
-        for part in s.split(","):
-            part = part.strip()
-            if part.isdigit():
-                nums.append(int(part))
-        return nums
+    \b
+    Write the full plan each time. Mark completed steps with [DONE]:
+      cua-plan "Login | Navigate | Find data | Report"
+      cua-plan "[DONE] Login | [DONE] Navigate | Set date | Report"
 
+    Restructure by rewriting:
+      cua-plan "[DONE] Login | [DONE] Navigate | Set date range | Choose period | Show Report | Read data | Report"
+    """
     p = _load_plan()
 
     if show:
         typer.echo(_format_plan(p))
         return
 
-    if replan is not None:
-        p["steps"] = _parse_steps(replan)
-        p["version"] = p.get("version", 0) + 1
-        _save_plan(p)
-        typer.echo(f"Plan replaced (v{p['version']}):")
+    if not text:
         typer.echo(_format_plan(p))
         return
 
-    if expand is not None:
-        idx = expand - 1
-        if 0 <= idx < len(p.get("steps", [])):
-            if not text:
-                typer.echo("--expand requires plan text as argument", err=True)
-                raise typer.Exit(1)
-            sub_steps = _parse_steps(text)
-            # Replace step N with the sub-steps
-            original = p["steps"][idx]
-            p["steps"] = p["steps"][:idx] + sub_steps + p["steps"][idx + 1:]
-            p["version"] = p.get("version", 0) + 1
-            _save_plan(p)
-            typer.echo(f"Step {expand} ({original['text']}) expanded into {len(sub_steps)} sub-steps:")
-            typer.echo(_format_plan(p))
-        else:
-            typer.echo(f"Invalid step number: {expand}", err=True)
-            raise typer.Exit(1)
-        return
-
-    if complete is not None:
-        nums = _parse_step_nums(complete)
-        for n in nums:
-            idx = n - 1
-            if 0 <= idx < len(p.get("steps", [])):
-                p["steps"][idx]["status"] = "done"
-                if note:
-                    p["steps"][idx]["note"] = note
-            else:
-                typer.echo(f"Invalid step number: {n}", err=True)
-                raise typer.Exit(1)
-        _save_plan(p)
-        typer.echo(f"Step(s) {','.join(str(n) for n in nums)} marked done.")
-        typer.echo(_format_plan(p))
-        return
-
-    if fail is not None:
-        nums = _parse_step_nums(fail)
-        for n in nums:
-            idx = n - 1
-            if 0 <= idx < len(p.get("steps", [])):
-                p["steps"][idx]["status"] = "failed"
-                if note:
-                    p["steps"][idx]["note"] = note
-            else:
-                typer.echo(f"Invalid step number: {n}", err=True)
-                raise typer.Exit(1)
-        _save_plan(p)
-        typer.echo(f"Step(s) {','.join(str(n) for n in nums)} marked failed.")
-        typer.echo(_format_plan(p))
-        return
-
-    if skip is not None:
-        nums = _parse_step_nums(skip)
-        for n in nums:
-            idx = n - 1
-            if 0 <= idx < len(p.get("steps", [])):
-                p["steps"][idx]["status"] = "skipped"
-                if note:
-                    p["steps"][idx]["note"] = note
-            else:
-                typer.echo(f"Invalid step number: {n}", err=True)
-                raise typer.Exit(1)
-        _save_plan(p)
-        typer.echo(f"Step(s) {','.join(str(n) for n in nums)} skipped.")
-        typer.echo(_format_plan(p))
-        return
-
-    if text:
-        p["steps"] = _parse_steps(text)
-        p["version"] = p.get("version", 0) + 1
-        _save_plan(p)
-        typer.echo(f"Plan created (v{p['version']}):")
-        typer.echo(_format_plan(p))
-        return
-
-    # No args — show plan
+    p["steps"] = _parse_steps(text)
+    p["version"] = p.get("version", 0) + 1
+    _save_plan(p)
     typer.echo(_format_plan(p))
 
 

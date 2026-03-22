@@ -65,6 +65,7 @@ if [ -n "${CUA_HTTP_PROXY:-}" ]; then
 fi
 
 # Chromium — note: just "chromium" on Debian, not "chromium-browser"
+# --test-type suppresses the "developer mode extensions" warning banner
 chromium \
     --start-fullscreen \
     --no-first-run \
@@ -74,6 +75,9 @@ chromium \
     --disable-dev-shm-usage \
     --no-sandbox \
     --test-type \
+    --remote-debugging-port=9222 \
+    --remote-allow-origins=* \
+    --load-extension=/app/extensions/cua-hud \
     --window-size="${SCREEN_WIDTH},${SCREEN_HEIGHT}" \
     --start-maximized \
     $PROXY_ARGS \
