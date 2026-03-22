@@ -1,0 +1,551 @@
+#!/usr/bin/env python3
+"""Manage browser code coverage via Chrome DevTools Protocol.
+
+Uses a background daemon that keeps the CDP websocket open so profiler
+state persists across snapshot/report/stop calls.
+
+Usage:
+  cua-cdp-coverage start          Start daemon + coverage recording
+  cua-cdp-coverage snapshot       Take a snapshot and show summary
+  cua-cdp-coverage report         Detailed per-file coverage report
+  cua-cdp-coverage stop           Stop recording and show final report
+"""
+
+import json
+import os
+import signal
+import sys
+import time
+import urllib.request
+
+import typer
+import websocket
+
+app = typer.Typer(add_completion=False)
+
+CDP_HOST = "127.0.0.1"
+CDP_PORT = 9222
+STATE_FILE = "/tmp/cua_coverage_state.json"
+PID_FILE = "/tmp/cua_coverage_daemon.pid"
+CMD_FILE = "/tmp/cua_coverage_cmd"
+RESULT_FILE = "/tmp/cua_coverage_result"
+
+
+# ── Shared helpers ────────────────────────────────────────
+
+def _get_page_ws_url() -> str:
+    url = f"http://{CDP_HOST}:{CDP_PORT}/json"
+    with urllib.request.urlopen(url, timeout=3) as resp:
+        tabs = json.loads(resp.read())
+    for tab in tabs:
+        if tab.get("type") == "page" and not tab.get("url", "").startswith(
+            ("chrome-extension://", "devtools://", "chrome://")
+        ):
+            ws_url = tab.get("webSocketDebuggerUrl")
+            if ws_url:
+                return ws_url
+    raise RuntimeError("No browser tab found")
+
+
+def _cdp_call(ws, method: str, params: dict = None, msg_id: int = 1) -> dict:
+    msg = {"id": msg_id, "method": method}
+    if params:
+        msg["params"] = params
+    ws.send(json.dumps(msg))
+    while True:
+        raw = ws.recv()
+        resp = json.loads(raw)
+        if resp.get("id") == msg_id:
+            return resp
+
+
+def _save_state(state: dict):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+
+def _covered_segments(ranges: list) -> list:
+    """Compute covered byte segments from V8 coverage ranges.
+
+    V8 ranges are nested: the outermost range covers the whole scope,
+    inner ranges override with their own count.  The innermost range's
+    count is the effective count at any offset.
+
+    Returns list of (start, end) tuples that are covered (count > 0).
+    """
+    if not ranges:
+        return []
+
+    points = set()
+    for start, end, _count in ranges:
+        points.add(start)
+        points.add(end)
+    points = sorted(points)
+
+    segments = []
+    for i in range(len(points) - 1):
+        seg_start = points[i]
+        seg_end = points[i + 1]
+
+        best_count = 0
+        best_span = float("inf")
+        for rng_start, rng_end, count in ranges:
+            if rng_start <= seg_start and rng_end >= seg_end:
+                span = rng_end - rng_start
+                if span < best_span:
+                    best_span = span
+                    best_count = count
+
+        if best_count > 0:
+            segments.append((seg_start, seg_end))
+
+    return segments
+
+
+def _merge_ranges(a: list, b: list) -> list:
+    """Union two lists of (start, end) ranges into sorted, non-overlapping."""
+    all_ranges = a + b
+    if not all_ranges:
+        return []
+    all_ranges.sort()
+    merged = [all_ranges[0]]
+    for s, e in all_ranges[1:]:
+        ps, pe = merged[-1]
+        if s <= pe:
+            merged[-1] = (ps, max(pe, e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _range_size(ranges: list) -> int:
+    """Total bytes in a list of non-overlapping ranges."""
+    return sum(e - s for s, e in ranges)
+
+
+def _calc_coverage(entries: list, kind: str = "js") -> dict:
+    """Calculate coverage from CDP coverage entries.
+
+    Returns per-file info including 'covered_ranges' for cumulative tracking.
+    """
+    files = {}
+    total_bytes = 0
+    used_bytes = 0
+
+    for entry in entries:
+        url = entry.get("url", "")
+
+        if kind == "js":
+            all_ranges = []
+            for func in entry.get("functions", []):
+                for rng in func.get("ranges", []):
+                    s = rng.get("startOffset", 0)
+                    e = rng.get("endOffset", 0)
+                    c = rng.get("count", 0)
+                    if e > s:
+                        all_ranges.append((s, e, c))
+
+            if all_ranges:
+                file_total = all_ranges[0][1] - all_ranges[0][0]
+                covered_segs = _covered_segments(all_ranges)
+                file_used = _range_size(covered_segs)
+            else:
+                file_total = 0
+                file_used = 0
+                covered_segs = []
+
+        else:
+            text = entry.get("text", "")
+            file_total = len(text) if text else entry.get("end", 0)
+            covered_segs = []
+            file_used = 0
+            for r in entry.get("ranges", []):
+                s = r.get("startOffset", 0)
+                e = r.get("endOffset", 0)
+                if e > s:
+                    covered_segs.append((s, e))
+                    file_used += e - s
+
+        if file_total > 0:
+            pct = min(100.0, file_used / file_total * 100)
+        else:
+            pct = 0.0
+
+        total_bytes += file_total
+        used_bytes += min(file_used, file_total)
+
+        if url and not url.startswith("chrome-extension://"):
+            short_url = url
+            if len(short_url) > 60:
+                short_url = "..." + short_url[-57:]
+            files[short_url] = {
+                "total": file_total,
+                "used": min(file_used, file_total),
+                "pct": round(pct, 1),
+                "covered_ranges": covered_segs,
+            }
+
+    overall_pct = round(used_bytes / total_bytes * 100, 1) if total_bytes > 0 else 0.0
+    return {
+        "total_bytes": total_bytes,
+        "used_bytes": used_bytes,
+        "overall_pct": overall_pct,
+        "file_count": len(files),
+        "files": files,
+    }
+
+
+def _format_summary(js_cov: dict, css_cov: dict) -> str:
+    lines = ["Coverage Summary:"]
+    lines.append(f"  JS:  {js_cov['overall_pct']:5.1f}%  ({js_cov['used_bytes']:,}/{js_cov['total_bytes']:,} bytes, {js_cov['file_count']} files)")
+    lines.append(f"  CSS: {css_cov['overall_pct']:5.1f}%  ({css_cov['used_bytes']:,}/{css_cov['total_bytes']:,} bytes, {css_cov['file_count']} files)")
+    combined_total = js_cov["total_bytes"] + css_cov["total_bytes"]
+    combined_used = js_cov["used_bytes"] + css_cov["used_bytes"]
+    combined_pct = round(combined_used / combined_total * 100, 1) if combined_total > 0 else 0.0
+    lines.append(f"  Total: {combined_pct}%  ({combined_used:,}/{combined_total:,} bytes)")
+    return "\n".join(lines)
+
+
+def _format_report(js_cov: dict, css_cov: dict, top_n: int = 15) -> str:
+    lines = [_format_summary(js_cov, css_cov), ""]
+
+    all_files = []
+    for url, info in js_cov.get("files", {}).items():
+        all_files.append(("JS", url, info))
+    for url, info in css_cov.get("files", {}).items():
+        all_files.append(("CSS", url, info))
+
+    all_files.sort(key=lambda x: x[2]["pct"])
+
+    lines.append(f"Least covered files (top {top_n}):")
+    for kind, url, info in all_files[:top_n]:
+        bar_len = int(info["pct"] / 5)
+        bar = "\u2588" * bar_len + "\u2591" * (20 - bar_len)
+        lines.append(f"  {info['pct']:5.1f}% {bar} [{kind}] {url}")
+
+    if len(all_files) > top_n:
+        lines.append(f"  ... ({len(all_files) - top_n} more files)")
+
+    return "\n".join(lines)
+
+
+# ── Daemon (background process holding CDP websocket open) ──
+
+def _daemon_main():
+    """Daemon loop: hold websocket, poll for commands."""
+    ws_url = _get_page_ws_url()
+    ws = websocket.create_connection(ws_url, timeout=30)
+    ws.settimeout(0.5)  # non-blocking recv for event drain
+
+    msg_counter = 0
+
+    def _call(method, params=None):
+        nonlocal msg_counter
+        msg_counter += 1
+        ws.settimeout(10)
+        try:
+            return _cdp_call(ws, method, params, msg_id=msg_counter)
+        finally:
+            ws.settimeout(0.5)
+
+    def _drain_events():
+        """Drain any pending CDP events so they don't pile up."""
+        try:
+            while True:
+                ws.recv()
+        except Exception:
+            pass
+
+    # Cumulative coverage: per-URL covered byte ranges.
+    # takePreciseCoverage RESETS counters, so each snapshot only shows
+    # code executed since the last call.  We union the covered ranges
+    # across all snapshots so coverage can only grow.
+    cumulative = {}  # key: (kind, url) -> {total, covered_ranges}
+
+    def _merge(cov: dict, kind: str):
+        """Merge a snapshot's per-file covered ranges into cumulative."""
+        for url, info in cov.get("files", {}).items():
+            key = (kind, url)
+            new_ranges = info.get("covered_ranges", [])
+            if key in cumulative:
+                old = cumulative[key]
+                cumulative[key] = {
+                    "total": max(old["total"], info["total"]),
+                    "covered_ranges": _merge_ranges(old["covered_ranges"], new_ranges),
+                }
+            else:
+                cumulative[key] = {
+                    "total": info["total"],
+                    "covered_ranges": _merge_ranges([], new_ranges),
+                }
+
+    def _cumulative_cov(kind: str) -> dict:
+        """Build a coverage dict from cumulative data for one kind."""
+        files = {}
+        total_bytes = 0
+        used_bytes = 0
+        for (k, url), info in cumulative.items():
+            if k != kind:
+                continue
+            used = min(_range_size(info["covered_ranges"]), info["total"])
+            pct = round(used / info["total"] * 100, 1) if info["total"] > 0 else 0.0
+            files[url] = {
+                "total": info["total"],
+                "used": used,
+                "pct": pct,
+            }
+            total_bytes += info["total"]
+            used_bytes += used
+        overall_pct = round(used_bytes / total_bytes * 100, 1) if total_bytes > 0 else 0.0
+        return {
+            "total_bytes": total_bytes,
+            "used_bytes": used_bytes,
+            "overall_pct": overall_pct,
+            "file_count": len(files),
+            "files": files,
+        }
+
+    def _take_snapshot():
+        """Fetch raw CDP data, merge into cumulative, return (js_cov, css_cov)."""
+        _drain_events()
+        js_resp = _call("Profiler.takePreciseCoverage")
+        js_entries = js_resp.get("result", {}).get("result", [])
+        js_raw = _calc_coverage(js_entries, "js")
+        _merge(js_raw, "js")
+
+        css_resp = _call("CSS.takeCoverageDelta")
+        css_entries = css_resp.get("result", {}).get("coverage", [])
+        css_raw = _calc_coverage(css_entries, "css")
+        _merge(css_raw, "css")
+
+        return _cumulative_cov("js"), _cumulative_cov("css")
+
+    # Start profiler + CSS tracking
+    _call("Profiler.enable")
+    _call("Profiler.startPreciseCoverage", {
+        "callCount": True,
+        "detailed": True,
+    })
+    _call("CSS.enable")
+    _call("CSS.startRuleUsageTracking")
+
+    _save_state({"recording": True, "snapshots": 0})
+
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+    with open(RESULT_FILE, "w") as f:
+        f.write("Coverage recording started (JS + CSS)\n")
+
+    running = True
+
+    def _handle_stop(signum, frame):
+        nonlocal running
+        running = False
+
+    signal.signal(signal.SIGTERM, _handle_stop)
+    signal.signal(signal.SIGINT, _handle_stop)
+
+    try:
+        while running:
+            _drain_events()
+
+            if not os.path.isfile(CMD_FILE):
+                time.sleep(0.2)
+                continue
+
+            try:
+                with open(CMD_FILE) as f:
+                    cmd_data = json.load(f)
+                os.remove(CMD_FILE)
+            except (json.JSONDecodeError, FileNotFoundError):
+                time.sleep(0.1)
+                continue
+
+            cmd = cmd_data.get("cmd", "")
+            top_n = cmd_data.get("top_n", 15)
+
+            try:
+                if cmd == "snapshot":
+                    js_cov, css_cov = _take_snapshot()
+
+                    state = {"recording": True}
+                    state["snapshots"] = cmd_data.get("snap_count", 0) + 1
+                    state["last_js_pct"] = js_cov["overall_pct"]
+                    state["last_css_pct"] = css_cov["overall_pct"]
+                    _save_state(state)
+
+                    with open(RESULT_FILE, "w") as f:
+                        f.write(_format_summary(js_cov, css_cov) + "\n")
+
+                elif cmd == "report":
+                    js_cov, css_cov = _take_snapshot()
+
+                    with open(RESULT_FILE, "w") as f:
+                        f.write(_format_report(js_cov, css_cov, top_n=top_n) + "\n")
+
+                elif cmd == "stop":
+                    js_cov, css_cov = _take_snapshot()
+
+                    try:
+                        _call("Profiler.stopPreciseCoverage")
+                        _call("CSS.stopRuleUsageTracking")
+                    except Exception:
+                        pass
+
+                    _save_state({"recording": False})
+
+                    with open(RESULT_FILE, "w") as f:
+                        f.write("Coverage recording stopped.\n\n")
+                        f.write(_format_report(js_cov, css_cov) + "\n")
+
+                    running = False
+
+            except Exception as e:
+                with open(RESULT_FILE, "w") as f:
+                    f.write(f"Error: {e}\n")
+
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+        try:
+            os.remove(PID_FILE)
+        except Exception:
+            pass
+
+
+def _send_command(cmd: str, top_n: int = 15, timeout: float = 10) -> str:
+    """Send a command to the daemon and wait for the result."""
+    if not os.path.isfile(PID_FILE):
+        raise RuntimeError("Coverage daemon not running. Run: cua-cdp-coverage start")
+
+    try:
+        with open(PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)  # check if alive
+    except (ProcessLookupError, ValueError):
+        raise RuntimeError("Coverage daemon not running (stale PID). Run: cua-cdp-coverage start")
+
+    # Remove stale result
+    try:
+        os.remove(RESULT_FILE)
+    except FileNotFoundError:
+        pass
+
+    # Load current snap count
+    snap_count = 0
+    try:
+        with open(STATE_FILE) as f:
+            snap_count = json.load(f).get("snapshots", 0)
+    except Exception:
+        pass
+
+    # Write command
+    with open(CMD_FILE, "w") as f:
+        json.dump({"cmd": cmd, "top_n": top_n, "snap_count": snap_count}, f)
+
+    # Wait for result
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.isfile(RESULT_FILE):
+            with open(RESULT_FILE) as f:
+                result = f.read()
+            if result.strip():
+                return result.strip()
+        time.sleep(0.1)
+
+    raise RuntimeError(f"Timeout waiting for daemon response ({timeout}s)")
+
+
+# ── CLI commands ──────────────────────────────────────────
+
+@app.command()
+def start() -> None:
+    """Start the coverage daemon (JS + CSS recording)."""
+    # Kill any existing daemon
+    if os.path.isfile(PID_FILE):
+        try:
+            with open(PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, signal.SIGTERM)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+    # Clean up stale files
+    for path in [CMD_FILE, RESULT_FILE, STATE_FILE, PID_FILE]:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+    # Fork daemon
+    pid = os.fork()
+    if pid == 0:
+        # Child: become daemon
+        os.setsid()
+        devnull = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull, 0)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+        try:
+            _daemon_main()
+        except Exception:
+            pass
+        os._exit(0)
+    else:
+        # Parent: wait for daemon to be ready
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if os.path.isfile(RESULT_FILE):
+                with open(RESULT_FILE) as f:
+                    msg = f.read().strip()
+                if msg:
+                    os.remove(RESULT_FILE)
+                    typer.echo(msg)
+                    return
+            time.sleep(0.1)
+        typer.echo("Timeout waiting for coverage daemon to start", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def snapshot() -> None:
+    """Take a coverage snapshot and show summary."""
+    try:
+        result = _send_command("snapshot")
+        typer.echo(result)
+    except RuntimeError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def report(
+    top: int = typer.Option(15, "--top", "-n", help="Show N least-covered files"),
+) -> None:
+    """Detailed per-file coverage report."""
+    try:
+        result = _send_command("report", top_n=top)
+        typer.echo(result)
+    except RuntimeError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def stop() -> None:
+    """Stop recording and show final report."""
+    try:
+        result = _send_command("stop", timeout=15)
+        typer.echo(result)
+    except RuntimeError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()

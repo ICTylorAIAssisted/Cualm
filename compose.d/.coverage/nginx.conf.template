@@ -1,0 +1,25 @@
+worker_processes 1;
+events { worker_connections 128; }
+
+http {
+    # Coverage target site
+    server {
+        listen 80;
+        location / {
+            proxy_pass http://coverage-target:80;
+            proxy_set_header Host $host;
+        }
+    }
+
+    # LLM API forward (port set by benchmark.sh)
+    server {
+        listen LLM_PORT_PLACEHOLDER;
+        location / {
+            proxy_pass http://host.docker.internal:LLM_PORT_PLACEHOLDER;
+            proxy_set_header Host $http_host;
+            proxy_read_timeout 300s;
+            proxy_send_timeout 300s;
+            client_max_body_size 50m;
+        }
+    }
+}

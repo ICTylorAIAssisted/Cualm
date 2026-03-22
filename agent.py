@@ -40,20 +40,12 @@ MAX_STEPS = int(os.environ.get("CUA_MAX_STEPS", cfg.getint("agent", "max_steps")
 POST_ACTION_DELAY = cfg.getfloat("agent", "post_action_delay")
 
 LLM_MAX_TOKENS = cfg.getint("llm", "max_tokens")
-LLM_TEMPERATURE = float(os.environ.get(
-    "CUA_TEMPERATURE", cfg.getfloat("llm", "temperature"),
-))
-LLM_TOP_P = float(os.environ.get(
-    "CUA_TOP_P", cfg.getfloat("llm", "top_p"),
-))
-LLM_PRESENCE_PENALTY = float(os.environ.get(
-    "CUA_PRESENCE_PENALTY", cfg.getfloat("llm", "presence_penalty"),
-))
+LLM_TEMPERATURE = float(os.environ.get("CUA_TEMPERATURE", "") or cfg.getfloat("llm", "temperature"))
+LLM_TOP_P = float(os.environ.get("CUA_TOP_P", "") or cfg.getfloat("llm", "top_p"))
+LLM_PRESENCE_PENALTY = float(os.environ.get("CUA_PRESENCE_PENALTY", "") or cfg.getfloat("llm", "presence_penalty"))
 MAX_API_ERRORS = cfg.getint("llm", "max_api_errors")
 MAX_PARSE_ERRORS = cfg.getint("llm", "max_parse_errors")
-MAX_HISTORY_PAIRS = int(os.environ.get(
-    "CUA_HISTORY_PAIRS", cfg.getint("llm", "max_history_pairs"),
-))
+MAX_HISTORY_PAIRS = int(os.environ.get("CUA_HISTORY_PAIRS", "") or cfg.getint("llm", "max_history_pairs"))
 
 # Extra kwargs passed to chat.completions.create() via extra_body.
 # Use for vendor-specific params like top_k, min_p, repetition_penalty.
@@ -69,6 +61,11 @@ MAX_OUTPUT_BYTES = cfg.getint("run", "max_output_bytes")
 RUN_OUTPUT_DIR = cfg.get("run", "output_dir")
 
 MODEL = os.environ.get("CUA_MODEL", "your-model-name")
+
+# Coverage mode — when enabled, agent starts CDP coverage recording after
+# navigation and auto-snapshots every N steps, injecting results into prompt.
+COVERAGE_ENABLED = os.environ.get("CUA_COVERAGE", "") == "1"
+COVERAGE_INTERVAL = int(os.environ.get("CUA_COVERAGE_INTERVAL", "") or 1)
 
 CALIBRATION_PROMPT = "You see a button on screen. Click it."
 
@@ -132,6 +129,13 @@ Browser JS (cua-cdp-js) — fast data extraction:
     run: cua-cdp-js - << 'JS'
     document.querySelector('input[placeholder="Search by name"]').value = "test"
     JS
+
+  IMPORTANT: Never use const/let in cua-cdp-js — the browser context
+  persists, so re-running will throw "Identifier already declared".
+  Write single expressions instead, or use var if you need a variable:
+    WRONG:  cua-cdp-js "const rows = [...document.querySelectorAll('tr')]; rows.map(..."
+    RIGHT:  cua-cdp-js "[...document.querySelectorAll('tr')].map(..."
+    RIGHT:  cua-cdp-js "var rows = [...document.querySelectorAll('tr')]; rows.map(..."
 
   For visual debugging (CSS issues, layout), open DevTools with F12.
   Dock it to the bottom or right so you can see both page and console.
@@ -476,6 +480,38 @@ def trim_messages(
     return messages[:sys_count] + messages[-keep:]
 
 
+# ── Coverage helpers ──────────────────────────────────────
+
+def _start_coverage() -> bool:
+    """Start CDP coverage recording. Returns True on success."""
+    try:
+        r = subprocess.run(
+            ["python3", "/app/tools/cua-cdp-coverage", "start"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            print(f"   📊 Coverage recording started")
+            return True
+        print(f"   ⚠ Coverage start failed: {r.stderr.strip() or r.stdout.strip()}")
+    except Exception as e:
+        print(f"   ⚠ Coverage start error: {e}")
+    return False
+
+
+def _coverage_snapshot() -> str:
+    """Take a coverage snapshot, return summary text for prompt injection."""
+    try:
+        r = subprocess.run(
+            ["python3", "/app/tools/cua-cdp-coverage", "snapshot"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
 # ── Agent loop ────────────────────────────────────────────
 
 
@@ -553,15 +589,6 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     if existing_cal is not None:
         print(f"\n── Calibration (cached) ──")
         print(f"   scale=({existing_cal['scale_x']:.4f}, {existing_cal['scale_y']:.4f})")
-        # Navigate to the task start URL (or about:blank if not set)
-        run_command("cua-key F11")
-        time.sleep(0.3)
-        run_command("cua-key ctrl+l")
-        time.sleep(0.1)
-        nav_url = start_url or "about:blank"
-        run_command(f'cua-type "{nav_url}"')
-        run_command("cua-key Return")
-        time.sleep(3 if start_url else 0.5)
     else:
         print("\n── Calibration (multi-step) ──")
         calibrated = False
@@ -649,15 +676,23 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             cx, cy = SCREEN_W // 2, SCREEN_H // 2
             run_command(f"cua-click {cx} {cy}")
 
-        # Navigate to the task start URL (or about:blank if not set)
-        run_command("cua-key F11")
-        time.sleep(0.3)
-        run_command("cua-key ctrl+l")
-        time.sleep(0.1)
-        nav_url = start_url or "about:blank"
-        run_command(f'cua-type "{nav_url}"')
-        run_command("cua-key Return")
-        time.sleep(3 if start_url else 0.5)
+    # ── Start coverage BEFORE navigation ──
+    # CDP Profiler.startPreciseCoverage only instruments scripts loaded
+    # AFTER the call.  By starting here (while still on calibration page),
+    # the subsequent navigation loads the target page's scripts under the
+    # profiler from the very first byte.
+    if COVERAGE_ENABLED:
+        _start_coverage()
+
+    # Navigate to the task start URL (or about:blank if not set)
+    run_command("cua-key F11")
+    time.sleep(0.3)
+    run_command("cua-key ctrl+l")
+    time.sleep(0.1)
+    nav_url = start_url or "about:blank"
+    run_command(f'cua-type "{nav_url}"')
+    run_command("cua-key Return")
+    time.sleep(3 if start_url else 0.5)
 
     # Reset context — drop calibration exchange so the model starts fresh
     # and doesn't treat the calibration click as the user's actual task.
@@ -768,6 +803,19 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         ctx["step"] = step + 1
         print(f"\n── Step {step + 1} ──")
 
+        # ── Coverage auto-snapshot ──
+        coverage_text = ""
+        if COVERAGE_ENABLED and step > 0 and step % COVERAGE_INTERVAL == 0:
+            coverage_text = _coverage_snapshot()
+            if coverage_text:
+                # Find the "Total:" line for a compact log message
+                for cline in coverage_text.splitlines():
+                    if "Total:" in cline or "JS:" in cline:
+                        print(f"   📊 {cline.strip()}")
+                        break
+                else:
+                    print(f"   📊 Coverage snapshot taken")
+
         # ── Screenshot ──
         try:
             plugins.emit("on_pre_screenshot", ctx)
@@ -816,6 +864,9 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
                 print(f"   🔄 Loop detected — injecting warning")
                 parts.append("")
                 parts.append(loop_warning)
+            if coverage_text:
+                parts.append("")
+                parts.append(f"Coverage status:\n{coverage_text}")
             parts.append("")
             parts.append(
                 "Here is the updated screenshot. "

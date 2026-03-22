@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><title>Complex Coverage Test</title></head>
+<body>
+<h1>Complex Coverage Test</h1>
+<p>Tests: nesting, branches, callbacks, closures, IIFE, try/catch, switch, dead code.</p>
+<div>
+  <button onclick="outerA()">1-Nested</button>
+  <button onclick="branchB(true)">2-BranchTrue</button>
+  <button onclick="branchB(false)">2-BranchFalse</button>
+  <button onclick="withCallback([1,2,3], function(x){return x*2})">3-Callback</button>
+  <button onclick="window._ctr=makeCounter(0); log('counter: '+window._ctr.increment()+','+window._ctr.increment()+','+window._ctr.decrement())">4-Closure</button>
+  <button onclick="riskyE(false)">5-TryOk</button>
+  <button onclick="riskyE(true)">5-TryThrow</button>
+  <button onclick="switchF('a'); switchF('b'); switchF('c'); switchF('z')">6-Switch</button>
+</div>
+<pre id="log"></pre>
+<script src="complex.js"></script>
+</body>
+</html>

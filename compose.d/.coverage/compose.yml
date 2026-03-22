@@ -1,0 +1,28 @@
+services:
+  coverage-target:
+    image: python:3.12-slim
+    container_name: coverage-target
+    working_dir: /site
+    command: ["python3", "-m", "http.server", "80", "--bind", "0.0.0.0"]
+    volumes:
+      - ../../benchmark/coverage-target:/site:ro,z
+    networks:
+      - coverage-net
+
+  coverage-gateway:
+    image: nginx:alpine
+    container_name: coverage-gateway
+    networks:
+      - coverage-net
+      - coverage-ext
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro,z
+
+networks:
+  coverage-net:
+    name: coverage-net
+    internal: true
+  coverage-ext:
+    name: coverage-ext

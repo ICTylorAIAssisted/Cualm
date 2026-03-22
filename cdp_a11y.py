@@ -122,8 +122,8 @@ def _build_tree(nodes: list[dict]) -> dict:
 def _should_show(node: dict) -> bool:
     """Decide if a node is worth including in the output."""
     role = node.get("role", "")
-    name = node.get("name", "")
-    value = node.get("value", "")
+    name = str(node.get("name", ""))
+    value = str(node.get("value", ""))
 
     if role in SKIP_ROLES:
         return False
@@ -141,8 +141,8 @@ def _should_show(node: dict) -> bool:
 def _format_node(node: dict) -> str:
     """Format a single node as a compact string."""
     role = node.get("role", "")
-    name = node.get("name", "")
-    value = node.get("value", "")
+    name = str(node.get("name", ""))
+    value = str(node.get("value", ""))
     props = node.get("properties", {})
 
     parts = [role]

@@ -39,12 +39,16 @@ COPY config.ini /app/config.ini
 COPY tools /app/tools
 COPY plugins /app/plugins
 COPY extensions /app/extensions
-COPY example /app/example
 COPY calibration /app/calibration
+COPY benchmark/coverage.py /app/benchmark/coverage.py
+COPY benchmark/coverage-target /app/benchmark/coverage-target
+COPY benchmark/coverage-test /app/benchmark/coverage-test
+COPY coverage-bench.sh /app/coverage-bench.sh
 
 RUN chmod +x /app/tools/* && \
     chmod +x /app/agent.py && \
     chmod +x /app/start.sh && \
+    chmod +x /app/coverage-bench.sh && \
     find /app/plugins -path '*/tools/cua-*' -exec chmod +x {} + && \
     mkdir -p /var/cua/calibration
 
