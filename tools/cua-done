@@ -30,6 +30,39 @@ DONE_MARKER = "@@CUA_TASK_COMPLETE@@"
 # Full payload is written here for the orchestrator to read
 DONE_PAYLOAD_FILE = "/tmp/cua_done.json"
 
+# Plan file written by cua-plan
+PLAN_FILE = "/tmp/cua_plan.json"
+
+
+def _check_plan() -> tuple[bool, str]:
+    """Check if all plan steps are done. Returns (ok, message)."""
+    try:
+        with open(PLAN_FILE) as f:
+            plan = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return True, ""  # No plan = no restriction
+
+    steps = plan.get("steps", [])
+    if not steps:
+        return True, ""
+
+    pending = [s for s in steps if s["status"] == "pending"]
+    failed = [s for s in steps if s["status"] == "failed"]
+    done = [s for s in steps if s["status"] == "done"]
+
+    if not pending and not failed:
+        return True, ""
+
+    lines = ["Cannot complete task — plan has unfinished steps:"]
+    for i, s in enumerate(steps, 1):
+        icon = {"pending": "○", "done": "✓", "failed": "✗",
+                "skipped": "–"}.get(s["status"], "?")
+        lines.append(f"  {icon} {i}. {s['text']}")
+    lines.append(f"  ({len(done)} done, {len(pending)} pending, {len(failed)} failed)")
+    lines.append("")
+    lines.append("Complete remaining steps first, or use --force to override.")
+    return False, "\n".join(lines)
+
 
 @app.command()
 def cua_done(
@@ -48,6 +81,11 @@ def cua_done(
         "-s",
         help="Include a screenshot of the current screen in the result",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Complete even if plan has unfinished steps",
+    ),
 ) -> None:
     """Signal task completion.
 
@@ -58,6 +96,13 @@ def cua_done(
       cua-done "Here is the current page" --screenshot
       cua-done "Price is 42.50" -r "42.50" --screenshot
     """
+    # Check plan status unless --force
+    if not force:
+        ok, msg = _check_plan()
+        if not ok:
+            typer.echo(msg, err=True)
+            raise typer.Exit(1)
+
     # Build the full payload
     full_payload = {"summary": summary}
     if result is not None:

@@ -292,7 +292,8 @@ def spawn_agent(
         "PYTHONUNBUFFERED": "1",
     }
     # Forward optional LLM tuning env vars
-    for var in ("CUA_TEMPERATURE", "CUA_LLM_EXTRA_PARAMS", "CUA_HISTORY_PAIRS"):
+    for var in ("CUA_TEMPERATURE", "CUA_TOP_P", "CUA_PRESENCE_PENALTY",
+                "CUA_LLM_EXTRA_PARAMS", "CUA_HISTORY_PAIRS"):
         val = os.environ.get(var)
         if val:
             env[var] = val

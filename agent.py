@@ -42,14 +42,21 @@ LLM_MAX_TOKENS = cfg.getint("llm", "max_tokens")
 LLM_TEMPERATURE = float(os.environ.get(
     "CUA_TEMPERATURE", cfg.getfloat("llm", "temperature"),
 ))
+LLM_TOP_P = float(os.environ.get(
+    "CUA_TOP_P", cfg.getfloat("llm", "top_p"),
+))
+LLM_PRESENCE_PENALTY = float(os.environ.get(
+    "CUA_PRESENCE_PENALTY", cfg.getfloat("llm", "presence_penalty"),
+))
 MAX_API_ERRORS = cfg.getint("llm", "max_api_errors")
 MAX_PARSE_ERRORS = cfg.getint("llm", "max_parse_errors")
 MAX_HISTORY_PAIRS = int(os.environ.get(
     "CUA_HISTORY_PAIRS", cfg.getint("llm", "max_history_pairs"),
 ))
 
-# Extra kwargs passed directly to chat.completions.create().
-# Set as JSON, e.g. CUA_LLM_EXTRA_PARAMS='{"reasoning_effort":"high"}'
+# Extra kwargs passed to chat.completions.create() via extra_body.
+# Use for vendor-specific params like top_k, min_p, repetition_penalty.
+# Set as JSON, e.g. CUA_LLM_EXTRA_PARAMS='{"top_k":20,"min_p":0.0}'
 _extra_params_raw = os.environ.get("CUA_LLM_EXTRA_PARAMS", "")
 LLM_EXTRA_PARAMS: dict = {}
 if _extra_params_raw:
@@ -84,6 +91,21 @@ Be efficient — minimize the number of steps. Chain related actions in
 a single command with && when you don't need a screenshot in between:
   run: cua-click 450 250 && cua-type "admin" && cua-key Tab && cua-type "pass" && cua-key Return
 Each step costs time, so batch actions that logically belong together.
+
+Planning:
+  On your FIRST step, create a plan before doing anything else.
+  Use | to separate steps (keeps everything on one line):
+    run: cua-plan "Login to admin | Navigate to Reports | Set date to 2022 | Read top product | Report with cua-done"
+  As you complete steps, mark them done (use commas for multiple):
+    run: cua-plan --complete 1 --note "Logged in"
+    run: cua-plan --complete 4,5 --note "Found and reported"
+  Do NOT mark a step done until its result is fully visible/confirmed.
+  If a step is complex, expand it into sub-steps BEFORE working on it:
+    run: cua-plan --expand 3 "Scroll to table | Read top row | Note product name"
+  If a step fails and you need a different approach, replan:
+    run: cua-plan --replan "[DONE] Login | Use DevTools instead | Report result"
+  Your current plan is shown with each screenshot — use it to stay
+  on track and avoid repeating failed approaches.
 
 Available CLI tools (run any with --help for usage):
 
@@ -219,6 +241,8 @@ def default_llm_call(ctx: dict, messages: list[ChatCompletionMessageParam]) -> s
         max_tokens=LLM_MAX_TOKENS,
         messages=messages,
         temperature=LLM_TEMPERATURE,
+        top_p=LLM_TOP_P,
+        presence_penalty=LLM_PRESENCE_PENALTY,
         extra_body=LLM_EXTRA_PARAMS or None,
     )
     elapsed = time.monotonic() - t0
@@ -433,10 +457,10 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     plugins.emit("on_startup", ctx)
 
     print(f"🤖 Task: {task}")
+    sampling = f"temp={LLM_TEMPERATURE}, top_p={LLM_TOP_P}, presence_penalty={LLM_PRESENCE_PENALTY}"
     if LLM_EXTRA_PARAMS:
-        print(f"   LLM params: temperature={LLM_TEMPERATURE}, {LLM_EXTRA_PARAMS}")
-    elif LLM_TEMPERATURE != 0:
-        print(f"   LLM temperature: {LLM_TEMPERATURE}")
+        sampling += f", extra={LLM_EXTRA_PARAMS}"
+    print(f"   LLM sampling: {sampling}")
 
     # ── Build system prompt (after plugins had a chance to add tools) ──
     system_prompt = build_system_prompt(ctx)
@@ -588,6 +612,79 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     # ── Main loop ──
     last_command = ""
     last_output = ""
+    command_history: list[str] = []  # track all commands for loop detection
+    PLAN_FILE = "/tmp/cua_plan.json"
+
+    def _detect_loop() -> str:
+        """Check if the agent is stuck repeating similar actions.
+        Returns a warning string to inject, or '' if no loop detected."""
+        import re
+        if len(command_history) < 3:
+            return ""
+
+        def _normalize(cmd: str) -> str:
+            """Collapse coordinates/numbers so similar clicks match."""
+            return re.sub(r'\d{2,}', 'N', cmd).strip()
+
+        last_3 = [_normalize(c) for c in command_history[-3:]]
+        # All 3 identical (e.g. clicking same button 3 times)
+        if last_3[0] == last_3[1] == last_3[2]:
+            return (
+                "⚠ WARNING: You have repeated the same action 3 times with "
+                "no visible progress. The action may be working but the result "
+                "is below the viewport — try scrolling down. Or try a completely "
+                "different approach:\n"
+                "  - Use F12 DevTools Console to extract data via JS\n"
+                "  - Navigate via URL instead of clicking\n"
+                "  - Use Ctrl+F to search the page\n"
+                "Do NOT repeat the same action again."
+            )
+
+        # Check for click-wait loops (alternating click and wait)
+        if len(command_history) >= 6:
+            last_6_norm = [_normalize(c) for c in command_history[-6:]]
+            # Check if it's just 2 alternating commands
+            unique = set(last_6_norm)
+            if len(unique) <= 2 and all(
+                last_6_norm[i] == last_6_norm[i % 2]
+                for i in range(6)
+            ):
+                return (
+                    "⚠ WARNING: You are stuck in a click-wait loop (6 steps "
+                    "alternating the same 2 actions). The button click IS "
+                    "working — the results are likely below the viewport. "
+                    "Try: scroll down, or use DevTools Console to read the "
+                    "page data directly. Do NOT click the same button again."
+                )
+
+        return ""
+
+    def _read_plan() -> str:
+        """Read the current plan from disk, return formatted string or ''."""
+        try:
+            with open(PLAN_FILE) as f:
+                plan = json.load(f)
+            steps = plan.get("steps", [])
+            if not steps:
+                return ""
+            lines = ["Current plan:"]
+            for i, s in enumerate(steps, 1):
+                icon = {"pending": "○", "done": "✓", "failed": "✗",
+                        "skipped": "–"}.get(s["status"], "?")
+                line = f"  {icon} {i}. {s['text']}"
+                if s.get("note"):
+                    line += f"  ({s['note']})"
+                lines.append(line)
+            done = sum(1 for s in steps if s["status"] == "done")
+            lines.append(f"  Progress: {done}/{len(steps)} done")
+            return "\n".join(lines)
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            return ""
+
+    # Clear any stale plan from previous runs
+    if os.path.exists(PLAN_FILE):
+        os.remove(PLAN_FILE)
+
     for step in range(max_steps):
         ctx["step"] = step + 1
         print(f"\n── Step {step + 1} ──")
@@ -602,11 +699,31 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             time.sleep(1)
             continue
 
-        prompt = (
-            f"Task: {task}"
-            if step == 0
-            else f"Command: {last_command}\nOutput: {last_output}\n\nHere is the updated screenshot. Continue with the task."
-        )
+        plan_text = _read_plan()
+
+        if step == 0:
+            prompt = (
+                f"Task: {task}\n\n"
+                f"Create a plan using cua-plan with the steps needed "
+                f"to complete this task."
+            )
+        else:
+            parts = [f"Task: {task}", ""]
+            parts.extend([f"Command: {last_command}", f"Output: {last_output}"])
+            if plan_text:
+                parts.append("")
+                parts.append(plan_text)
+            loop_warning = _detect_loop()
+            if loop_warning:
+                print(f"   🔄 Loop detected — injecting warning")
+                parts.append("")
+                parts.append(loop_warning)
+            parts.append("")
+            parts.append(
+                "Here is the updated screenshot. "
+                "Update your plan progress and continue with the next step."
+            )
+            prompt = "\n".join(parts)
         messages.append(make_user_msg(img_b64, prompt))
 
         # ── LLM call ──
@@ -655,6 +772,7 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         # Store for next iteration's user message
         last_command = command
         last_output = output[:500]  # Truncate for context window
+        command_history.append(command)
 
         # ── Check for done marker ──
         if DONE_MARKER in output:
@@ -686,8 +804,7 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             plugins.emit("on_task_complete", ctx, summary=summary, result=result)
             break
 
-        # Feed output back
-        messages.append({"role": "user", "content": output})
+        # Feed output back (via last_command/last_output in next prompt)
         time.sleep(POST_ACTION_DELAY)
         messages = trim_messages(messages)
 

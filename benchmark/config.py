@@ -86,7 +86,7 @@ PHASE1_SITES = {"shopping", "shopping_admin", "reddit", "gitlab"}
 DEFAULT_AGENT_IMAGE = os.environ.get("CUA_AGENT_IMAGE", "cua-agent")
 DEFAULT_NETWORK = "webarena-net"
 DEFAULT_TIMEOUT = 600  # seconds per task (generous for local models)
-DEFAULT_MAX_STEPS = 30
+DEFAULT_MAX_STEPS = 40
 DEFAULT_CALIBRATION_VOLUME = os.environ.get(
     "CUA_CALIBRATION_VOLUME", "cua-calibration"
 )
