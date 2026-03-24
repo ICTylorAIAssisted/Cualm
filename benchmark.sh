@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ./benchmark.sh --site shopping --tasks 0-20
+#   ./benchmark.sh --site shopping --tasks 0-50 --parallel 4  # 4 tasks at once
 #   ./benchmark.sh --webarena-verified --tasks 0-50
 #   ./benchmark.sh --coverage                          # run coverage benchmark (bundled target)
 #   ./benchmark.sh --coverage --url http://localhost:3000  # custom target

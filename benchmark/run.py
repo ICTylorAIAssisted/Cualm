@@ -27,7 +27,9 @@ import re
 import signal
 import sys
 import tarfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import docker
@@ -259,6 +261,7 @@ def spawn_agent(
     args: argparse.Namespace,
     gateway_ip: str | None = None,
     active_containers: list | None = None,
+    vnc_port: int | None = None,
 ) -> dict:
     """Spawn one agent container, wait for completion, return result.
 
@@ -271,6 +274,7 @@ def spawn_agent(
     """
     task_id = task["task_id"]
     name = f"bench-task-{task_id}-{int(time.time())}"
+    _vnc_port = vnc_port if vnc_port is not None else args.vnc_port
 
     # Determine where host.docker.internal should point
     host_target = gateway_ip or "host-gateway"
@@ -340,12 +344,13 @@ def spawn_agent(
             network=args.network,
             extra_hosts={"host.docker.internal": host_target},
             volumes=volumes,
-            ports={"5900/tcp": args.vnc_port},
+            ports={"5900/tcp": _vnc_port} if _vnc_port else {},
             detach=True,
             mem_limit="2g",
             shm_size="256m",
         )
-        print(f"    VNC: localhost:{args.vnc_port}")
+        if _vnc_port:
+            print(f"    VNC: localhost:{_vnc_port}")
         if active_containers is not None:
             active_containers.append(container)
     except Exception as e:
@@ -440,7 +445,10 @@ def spawn_agent(
 
     # Unregister from active list
     if active_containers is not None:
-        active_containers.clear()
+        try:
+            active_containers.remove(container)
+        except ValueError:
+            pass
 
     return {
         "task_id": task_id,
@@ -741,86 +749,134 @@ def run_benchmark(args: argparse.Namespace) -> None:
     print(f"  Evaluation  : {eval_mode}")
     print(f"  Network     : {args.network}")
     print(f"  VNC port    : {args.vnc_port}")
+    parallel = max(1, args.parallel)
+    if parallel > 1:
+        print(f"  Parallel    : {parallel}")
     print()
 
     # ── Signal handling for clean Ctrl+C ──
     interrupted = False
-    # Mutable list holding the currently running containers so the
-    # interrupt handler can kill them immediately.
+    # Thread-safe list of running containers for Ctrl+C cleanup.
     active_containers: list = []
+    active_lock = threading.Lock()
 
     def on_interrupt(signum, frame):
         nonlocal interrupted
         if interrupted:
-            # Second Ctrl+C — force exit
             print("\nForce exit. Cleaning up...")
             cleanup_benchmark(client)
             sys.exit(1)
         interrupted = True
-        print("\nInterrupted. Stopping current task...")
-        # Kill any active containers (agent + proxy sidecars)
-        for c in list(active_containers):
-            try:
-                c.remove(force=True)
-            except Exception:
-                pass
-        active_containers.clear()
+        print("\nInterrupted. Stopping running tasks...")
+        with active_lock:
+            for c in list(active_containers):
+                try:
+                    c.remove(force=True)
+                except Exception:
+                    pass
+            active_containers.clear()
 
     old_handler = signal.signal(signal.SIGINT, on_interrupt)
+
+    # ── Thread-safe output ──
+    print_lock = threading.Lock()
+    completed_count = [0]  # mutable for closure access
+
+    def tprint(*a, **kw):
+        with print_lock:
+            print(*a, **kw)
+
+    # ── Per-task worker ──
+    def run_one_task(idx: int, raw_task: dict, vnc_port: int | None) -> dict:
+        """Run a single task: spawn agent, evaluate, return result dict."""
+        task = resolve_urls(raw_task)
+        task_id = task["task_id"]
+        intent_short = task["resolved_intent"][:80]
+        prefix = f"[{idx + 1}/{len(tasks)}] Task {task_id}"
+
+        tprint(f"{prefix}: {intent_short}")
+
+        if args.human:
+            result = spawn_human(client, task, args, gateway_ip)
+        else:
+            result = spawn_agent(
+                client, task, args, gateway_ip,
+                active_containers, vnc_port=vnc_port,
+            )
+
+        # ── Evaluate ──
+        if args.webarena_verified:
+            from verified import build_agent_response
+            build_agent_response(result, raw_task, Path(args.output_dir))
+            try:
+                wa_result = evaluate_task_verified(
+                    raw_task, result, Path(args.output_dir), wa_config
+                )
+            except Exception as e:
+                tprint(f"    ⚠ Evaluation error: {e}")
+                wa_result = {
+                    "passed": False, "score": 0.0, "status": "error",
+                }
+            result["passed"] = wa_result["passed"]
+            result["wa_score"] = wa_result.get("score", 0.0)
+            result["wa_status"] = wa_result.get("status", "error")
+        else:
+            result["passed"] = evaluate_task(raw_task, result)
+
+        # ── Report ──
+        with print_lock:
+            completed_count[0] += 1
+            done = completed_count[0]
+        if result["outcome"] == "skipped":
+            tprint(f"{prefix} → SKIP ({result['elapsed']}s)  [{done}/{len(tasks)}]")
+        else:
+            status = "PASS" if result["passed"] else "FAIL"
+            tprint(
+                f"{prefix} → {status} ({result['steps']} steps, "
+                f"{result['elapsed']}s, {result['outcome']})  [{done}/{len(tasks)}]"
+            )
+        if result.get("result"):
+            tprint(f"  → Result: {str(result['result'])[:120]}")
+
+        return result
 
     results: list[dict] = []
 
     try:
-        for i, raw_task in enumerate(tasks):
-            if interrupted:
-                print(f"\nSkipping remaining {len(tasks) - i} tasks.")
-                break
+        if parallel <= 1:
+            # ── Sequential execution (original behavior) ──
+            for i, raw_task in enumerate(tasks):
+                if interrupted:
+                    print(f"\nSkipping remaining {len(tasks) - i} tasks.")
+                    break
+                result = run_one_task(i, raw_task, args.vnc_port)
+                results.append(result)
+        else:
+            # ── Parallel execution ──
+            # VNC ports: -j0 means no VNC, otherwise auto-assign from base
+            vnc_base = args.vnc_port if args.parallel > 0 else None
 
-            task = resolve_urls(raw_task)
-            intent_short = task["resolved_intent"][:80]
-            print(
-                f"[{i + 1}/{len(tasks)}] Task {task['task_id']}: {intent_short}"
-            )
+            futures = {}
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                for i, raw_task in enumerate(tasks):
+                    if interrupted:
+                        break
+                    vnc_p = (vnc_base + (i % parallel)) if vnc_base else None
+                    future = pool.submit(run_one_task, i, raw_task, vnc_p)
+                    futures[future] = i
 
-            if args.human:
-                result = spawn_human(client, task, args, gateway_ip)
-            else:
-                result = spawn_agent(client, task, args, gateway_ip, active_containers)
-
-            # ── Evaluate ──
-            if args.webarena_verified:
-                from verified import build_agent_response
-                build_agent_response(
-                    result, raw_task, Path(args.output_dir)
-                )
-
-                try:
-                    wa_result = evaluate_task_verified(
-                        raw_task, result, Path(args.output_dir), wa_config
-                    )
-                except Exception as e:
-                    print(f"    ⚠ Evaluation error: {e}")
-                    wa_result = {
-                        "passed": False, "score": 0.0, "status": "error",
-                    }
-                result["passed"] = wa_result["passed"]
-                result["wa_score"] = wa_result.get("score", 0.0)
-                result["wa_status"] = wa_result.get("status", "error")
-            else:
-                result["passed"] = evaluate_task(raw_task, result)
-
-            results.append(result)
-
-            if result["outcome"] == "skipped":
-                print(f"  → SKIP ({result['elapsed']}s)")
-            else:
-                status = "PASS" if result["passed"] else "FAIL"
-                print(
-                    f"  → {status} ({result['steps']} steps, "
-                    f"{result['elapsed']}s, {result['outcome']})"
-                )
-            if result.get("result"):
-                print(f"  → Result: {str(result['result'])[:120]}")
+                for future in as_completed(futures):
+                    if interrupted:
+                        # Cancel pending futures
+                        for f in futures:
+                            f.cancel()
+                        break
+                    try:
+                        result = future.result()
+                        results.append(result)
+                    except Exception as e:
+                        idx = futures[future]
+                        tprint(f"  ⚠ Task {idx} raised: {e}")
 
         # Write report (even if interrupted — partial results are useful)
         if results:
@@ -955,6 +1011,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5900,
         help="Host port to expose agent VNC on (default: 5900)",
+    )
+    p.add_argument(
+        "--parallel", "-j",
+        type=int,
+        default=1,
+        help="Run N tasks in parallel (default: 1). "
+             "VNC ports auto-assigned starting from --vnc-port. "
+             "Use -j0 to disable VNC in parallel mode.",
     )
     # ── Human mode ──
     p.add_argument(
