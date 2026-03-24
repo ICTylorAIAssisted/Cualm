@@ -1,309 +1,263 @@
-# CUA Agent — Shell-based Computer Use
+# Cualm
 
-A minimal computer-use agent where the LLM controls a Linux desktop by
-emitting shell commands.  Each action is a standalone CLI tool that the
-agent invokes through a single `run` interface.
+**Computer Use Agent, Little Manager**
 
-## Architecture
+A model-agnostic agent that operates a Linux desktop through a screenshot → LLM → command loop. It runs inside a Docker container with Xvfb, Chromium, and xdotool, and works with any OpenAI-compatible API — local models (Qwen, Llama), Claude, GPT-4V, or anything with a `/v1/chat/completions` endpoint.
+
+Cualm comes with two benchmarks:
+
+- **WebArena** — 812 real web tasks across 5 self-hosted sites (Magento, Reddit, GitLab, Wikipedia, maps)
+- **Coverage Benchmark** — explore a website to maximize JS+CSS code coverage
 
 ```
- LLM                        Agent                     Shell
- ───                        ─────                     ─────
-  ← screenshot ────────────── take screenshot
-  → "I see a button.         ─── extract_command() ─→ run: cua-click 450 300
-     run: cua-click 450 300" ─── run_command()     ─→ cua-click 450 300
-                              ←── capture stdout,  ←  Calibrated. model(450,300) → ...
-                                   stderr, timing
-  ← formatted output ──────
-  ← screenshot ──────────────
-  → "Task complete.          ─── run_command()     ─→ cua-done "Finished" --result "42"
-     run: cua-done ..."      ←── detects marker    ←  @@CUA_TASK_COMPLETE@@
-                                                       {"summary":"Finished","result":"42"}
+┌─────────────────────────────────────┐
+│          Agent Container            │
+│                                     │
+│  Screenshot ──→ LLM ──→ Command    │
+│      ↑                    │         │
+│      └────────────────────┘         │
+│                                     │
+│  Xvfb  Chromium  xdotool  tools/   │
+└─────────────────────────────────────┘
 ```
 
-The model writes natural prose and ends with a single `run: <command>`
-line.  The agent extracts that line, executes it in a shell, and feeds
-the output back.  No JSON wrapper — just a prefix convention.
+---
+
+## Quick Start
+
+```bash
+# 1. Build the agent image
+./run.sh build
+
+# 2. Run a single task interactively (opens VNC on :5900)
+OPENAI_BASE_URL=http://localhost:8000/v1 \
+CUA_MODEL=your-model \
+  docker run -it --rm -p 5900:5900 \
+    -e OPENAI_BASE_URL -e CUA_MODEL \
+    cua-agent agent "Search for 'wireless mouse' on the shopping site"
+
+# 3. Connect to VNC to watch
+open vnc://localhost:5900    # macOS
+# or use any VNC viewer on port 5900
+```
+
+## WebArena Benchmark
+
+```bash
+# Start WebArena sites and run tasks
+./benchmark.sh --site shopping --tasks 0-20
+
+# Run with WA-Verified evaluation
+./benchmark.sh --webarena-verified --tasks 0-50
+
+# Human mode — opens VNC, shows task, no agent
+./benchmark.sh --tasks 0 --human
+
+# Stop and clean up
+./benchmark.sh down
+```
+
+WebArena sites run in isolated Docker networks. An nginx gateway routes traffic so the agent sees `localhost:PORT` URLs matching WebArena's hardcoded addresses, while the LLM API is proxied through to the host.
+
+## Coverage Benchmark
+
+Measures how much of a website's JavaScript and CSS the agent can exercise through exploration.
+
+```bash
+# Run against the bundled test app
+./benchmark.sh --coverage
+
+# With options
+./benchmark.sh --coverage --max-steps 30 --target 80
+
+# Custom URL
+./benchmark.sh --coverage --url http://myapp:3000
+
+# Force re-calibration
+./benchmark.sh --coverage --recalibrate
+
+# Verify coverage tracking is working correctly
+./benchmark.sh --coverage-test
+```
+
+The agent automatically receives coverage snapshots every step, injected into its prompt so it knows which areas it has and hasn't explored.
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENAI_BASE_URL` | `http://localhost:8000/v1` | LLM endpoint |
+| `OPENAI_API_KEY` | `not-needed` | API key |
+| `CUA_MODEL` | `your-model-name` | Model identifier |
+| `CUA_MAX_STEPS` | `50` | Max agent steps per task |
+| `CUA_TEMPERATURE` | `0.7` | LLM temperature |
+| `CUA_TOP_P` | `0.95` | LLM top_p |
+| `CUA_PRESENCE_PENALTY` | `1.5` | Presence penalty |
+| `CUA_LLM_EXTRA_PARAMS` | `{}` | Extra JSON for `extra_body` (e.g. `{"top_k":20}`) |
+| `CUA_START_URL` | *(calibration page)* | URL for Chromium to open |
+| `CUA_HISTORY_PAIRS` | `0` | Old message pairs to keep in context |
+| `CUA_VNC_PORT` | `5900` | Host port for VNC |
+
+All LLM parameters fall back to `config.ini` if the env var is unset or empty.
+
+### config.ini
+
+Screen resolution, LLM defaults, delays, and calibration settings. The Docker image syncs `SCREEN_WIDTH` / `SCREEN_HEIGHT` env vars into this file at startup.
+
+---
+
+## How It Works
+
+### Agent Loop
+
+Each step:
+
+1. **Screenshot** — captured via `scrot`
+2. **Accessibility tree** — fetched via CDP (`Accessibility.getFullAXTree`), truncated to 150 lines
+3. **Build prompt** — task + previous observation summary + last command/output + plan + a11y tree + screenshot
+4. **Call LLM** — any OpenAI-compatible API
+5. **Extract command** — parses `run: <command>` from response
+6. **Execute** — runs in shell, captures output
+7. **Summary** — extracts text from `<think>` block for next step's context (replaces image history)
+
+### Calibration
+
+Vision models interpret pixel coordinates differently depending on training. On first run, Cualm shows a calibration page with clickable dots. The model clicks them, and the offset/scale is computed and cached per model in a Docker volume. Subsequent runs skip calibration.
+
+### Planning
+
+The model manages a full-rewrite plan via `cua-plan`:
+
+```bash
+cua-plan "Login | Navigate | Filter | Read data | Report"
+cua-plan "[DONE] Login | [DONE] Navigate | Filter | Read data | Report"
+cua-plan "[DONE] Login | [DONE] Navigate | [FAIL] Filter | Use JS instead | Report"
+```
+
+`cua-done` refuses to complete if the plan has pending steps (unless `--force`).
+
+### Loop Detection
+
+The agent detects when it's stuck — 3 identical actions in a row or 6-step click-wait alternation triggers a warning injection suggesting alternative approaches (JS extraction, URL navigation, Ctrl+F search).
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `cua-click` | Click at coordinates (with calibration mapping) |
+| `cua-type` | Type text via xdotool |
+| `cua-key` | Key combos (`ctrl+a`, `Return`, `F12`, etc.) |
+| `cua-scroll` | Scroll with mousewheel |
+| `cua-drag` | Drag from A to B |
+| `cua-wait` | Wait (default 500ms, max 3s) |
+| `cua-screenshot` | Manual screenshot capture |
+| `cua-plan` | Full-rewrite planning |
+| `cua-done` | Signal task completion |
+| `cua-cdp-js` | Execute JavaScript in the browser via CDP |
+| `cua-cdp-coverage` | Manage JS+CSS coverage recording via CDP |
+| `cua-help` | Show tool help |
+
+Tools are auto-discovered from their `--help` output and injected into the system prompt.
+
+### Status Bar (HUD)
+
+A Chrome extension displays a thin bar at the bottom of every page:
+
+```
+scroll: 45% ↓1200px left │ page: 3400px (4.2 screens) │ dom: changed 2s ago │ focus: input#email │ url: /settings/profile
+```
+
+The agent uses this to check scroll position, detect page changes after actions, and verify which element has focus before typing.
+
+---
 
 ## Project Structure
 
 ```
-agent.py             Main loop — screenshot → LLM → command
-cua_config.py        Shared configuration and calibration
-plugin_host.py       Plugin loader and hook dispatcher
-tool_discovery.py    Auto-discovers cua-* tools for the system prompt
-config.ini           Default settings (screen, mouse, LLM, etc.)
-start.sh             Container entrypoint (Xvfb, Chromium, VNC)
-run.sh               Build / run / stop helper (Compose + extensions)
-Dockerfile           Container image definition
-docker-compose.yml   Base compose file (agent only)
-tools/               CLI tools the model invokes
-plugins/
-  audit.py           Screenshot + metadata logging
-  usage_tracking.py  Token counting and throughput stats
-  xmpp/              XMPP messaging (directory plugin)
-  README.md          Plugin API reference
-compose.d/
-  audit/              Audit volume mount (pairs with plugins/audit.py)
-  xmpp/              Prosody XMPP server (compose extension)
-  orchestrator/      XMPP-driven task spawner (per-task containers)
-  README.md          Compose extension reference
-calibration/
-  index.html         Calibration target page
-example/
-  index.html + .js   Interactive test page for agent validation
+├── agent.py                 # Main agent loop + prompt template
+├── cdp_a11y.py              # Accessibility tree via CDP
+├── config.ini               # Screen size, LLM params, delays
+├── start.sh                 # Xvfb + Fluxbox + VNC + Chromium launcher
+├── Dockerfile               # Debian bookworm, Chromium, Python
+├── requirements.txt         # openai, Pillow, typer, websocket-client
+├── benchmark.sh             # Entry point for all benchmark modes
+├── tools/
+│   ├── cua-click            # Click (with calibration)
+│   ├── cua-type             # Type text
+│   ├── cua-key              # Key combos
+│   ├── cua-scroll           # Scroll
+│   ├── cua-drag             # Drag
+│   ├── cua-wait             # Wait
+│   ├── cua-screenshot       # Screenshot
+│   ├── cua-plan             # Planning
+│   ├── cua-done             # Task completion
+│   ├── cua-cdp-js           # JS execution via CDP
+│   └── cua-cdp-coverage     # Coverage daemon via CDP
+├── extensions/
+│   └── cua-hud/             # Chrome extension (status bar)
+├── plugins/
+│   └── audit.py             # Step-by-step audit logging
+├── benchmark/
+│   ├── run.py               # WebArena benchmark runner
+│   ├── config.py            # URL templates, credentials, defaults
+│   ├── gateway.py           # Nginx gateway for network isolation
+│   ├── evaluate.py          # Task evaluation (exact/fuzzy/url match)
+│   ├── verified.py          # WA-Verified integration
+│   ├── har.py               # mitmproxy addon for HAR capture
+│   ├── coverage.py          # Coverage benchmark orchestrator
+│   ├── coverage-target/     # Bundled test app for coverage mode
+│   └── coverage-test/       # Coverage verification tests
+└── compose.d/
+    ├── .webarena/            # WebArena site containers
+    └── .coverage/            # Coverage target + gateway
 ```
 
-## CLI Tools
+---
 
-| Tool             | Purpose                                    |
-|------------------|--------------------------------------------|
-| `cua-click`      | Click / double-click / right-click         |
-| `cua-type`       | Type text via simulated keypresses          |
-| `cua-key`        | Press key combinations                      |
-| `cua-scroll`     | Scroll at a position                        |
-| `cua-drag`       | Drag between two points                     |
-| `cua-wait`       | Sleep for a duration                        |
-| `cua-screenshot` | Take screenshot (base64 to stdout)          |
-| `cua-done`       | Signal task completion                      |
+## Network Architecture
 
-Every tool uses [Typer](https://typer.tiangolo.com/) and has `--help`
-with full usage docs, reads defaults from `config.ini`, validates
-inputs, and gives actionable error messages.
-
-The system prompt is built dynamically at startup — the agent discovers
-all `cua-*` executables on `PATH`, runs `--help` on each, and includes
-their descriptions.  Drop a new tool in the `tools/` directory and it
-appears in the prompt automatically.
-
-## Calibration
-
-Coordinate tools need a calibration that maps model pixel space to
-actual screen pixels.  This is handled automatically:
-
-1. On startup, Chromium loads a calibration page with a single large
-   button centered on screen
-2. The agent shows the model a screenshot and asks it to click the
-   button — the model is *not* told the screen resolution, so it must
-   rely on its visual perception to locate the target
-3. The model emits `cua-click X Y` with the coordinates where it
-   sees the button
-4. The `cua-click` tool detects no calibration exists, computes scale
-   factors from the model's coordinates vs. actual screen center, saves
-   them to `/tmp/cua_calibration.json`, and performs the physical click
-5. The button's click handler navigates to `about:blank`, clearing the
-   calibration page before the main task loop begins
-6. All subsequent coordinate tools (`cua-click`, `cua-scroll`, `cua-drag`)
-   read the calibration and map coordinates transparently
-
-You can also override calibration via environment variables:
-```bash
-export CUA_SCALE_X=1.0
-export CUA_SCALE_Y=1.0
-```
-
-Tools that need coordinates but find no calibration will refuse with
-an instructive error message.
-
-## Configuration
-
-All defaults live in `config.ini` (INI format).  Searched in order:
-
-1. `$CUA_CONFIG` (explicit path)
-2. `./config.ini` (working directory)
-3. `~/.config/cua/config.ini`
-4. `/etc/cua/config.ini`
-
-Built-in defaults are used as fallback.
-
-**Note:** When running in Docker/Podman, the `start.sh` entrypoint
-automatically syncs `config.ini` screen values from the `SCREEN_WIDTH`,
-`SCREEN_HEIGHT`, and `DISPLAY` environment variables so there is a
-single source of truth.
-
-## LLM Output Format
-
-The model responds with free-form text and includes exactly one line
-starting with `run: ` to indicate the command to execute:
+Both benchmarks use isolated Docker networks so the agent container has no direct internet access — it can only reach the target sites and the LLM via an nginx gateway.
 
 ```
-I need to click the search box which is near the top of the page.
-run: cua-click 450 120
+┌────────────────────────────────────────────────────┐
+│         internal network (no internet)             │
+│                                                    │
+│  target sites ←──→ nginx gateway ←──→ agent        │
+│                         │                          │
+└─────────────────────────┼──────────────────────────┘
+                          │
+┌─────────────────────────┼──────────────────────────┐
+│         bridge network                             │
+│  nginx gateway → host.docker.internal:LLM_PORT     │
+└────────────────────────────────────────────────────┘
 ```
 
-The agent scans for the first line matching `run: <command>` (case-insensitive)
-and ignores everything else.  This lets the model "think out loud" naturally
-without needing structured JSON.
+---
 
-## Run Output Format
+## Coverage Tracking
 
-Every shell command returns:
+The coverage daemon (`cua-cdp-coverage`) keeps a persistent CDP websocket connection so profiler state survives across commands. It handles several V8 quirks:
 
-```
-<stdout>
-stderr: <stderr>
-[exit:<code>; <seconds>s]
-```
+- **Counter resets**: `Profiler.takePreciseCoverage` zeroes all counters after each call, so each snapshot only reports code run since the last call. The daemon unions covered byte ranges cumulatively — coverage can only go up.
+- **Nested ranges**: V8 returns nested ranges where inner ranges override outer counts. The daemon resolves coverage at each byte offset by finding the innermost enclosing range.
+- **Script lifecycle**: Scripts that get garbage-collected disappear from CDP results. Cumulative tracking preserves their coverage.
 
-When output exceeds `max_output_bytes` (default 5000):
+Verify it works: `./benchmark.sh --coverage-test`
 
-```
-Truncated stdout. Showing only first 5000 bytes. Full output stored in /tmp/cua_runs/abc123.out
-<first 5000 bytes>
-[exit:0; 1.23s]
-```
+---
 
-## Quick Start (Docker / Podman)
+## Performance Notes
 
-The agent runs via Docker or Podman Compose.  A helper script detects
-which is available and handles everything:
+- Task 0 (20 steps): ~150K prompt + 3K completion tokens, ~374s, ~$0.04
+- Full WebArena (812 tasks): ~$25-39 estimated, ~8h at 10 parallel
+- 90% of time is input-bound (prefill), not generation
+- Screenshot: ~299 tokens at 1280×720 (Qwen2.5-VL)
+- Text summary replaces image history: ~80 tokens vs ~443 tokens → 49% reduction per step
 
-```bash
-# Build and start
-./run.sh up
+---
 
-# Run the agent with a task
-./run.sh agent "Open Chromium and go to wikipedia.org"
+## License
 
-# Watch the desktop via VNC
-open vnc://localhost:5900    # macOS
-vncviewer localhost:5900     # Linux
-
-# Stop everything
-./run.sh down
-```
-
-Any compose extensions in `compose.d/` are auto-discovered and merged.
-For example, the bundled XMPP extension adds a Prosody server
-automatically.  See `compose.d/README.md` for details.
-
-### Environment Variables
-
-Pass LLM connection details via environment variables.  You can either
-export them before running or create an `.env` file (see below):
-
-| Variable           | Default                         | Purpose                              |
-|--------------------|---------------------------------|--------------------------------------|
-| `CUA_CONFIG`       | *(none)*                        | Path to config.ini override          |
-| `OPENAI_BASE_URL`  | `http://localhost:8000/v1`      | LLM endpoint                         |
-| `OPENAI_API_KEY`   | `not-needed`                    | API key                              |
-| `CUA_MODEL`        | `your-model-name`               | Model name                           |
-| `CUA_AUDIT_DIR`    | `./audit`                       | Host path for audit data             |
-| `SCREEN_WIDTH`     | `1280`                          | Virtual screen width                 |
-| `SCREEN_HEIGHT`    | `800`                           | Virtual screen height                |
-| `SCREEN_DEPTH`     | `24`                            | Virtual screen color depth           |
-| `DISPLAY`          | `:99`                           | X11 display number                   |
-| `CUA_SCALE_X`      | *(auto)*                        | Override calibration X scale factor  |
-| `CUA_SCALE_Y`      | *(auto)*                        | Override calibration Y scale factor  |
-
-Example `.env` file:
-
-```bash
-OPENAI_BASE_URL=http://host.docker.internal:8000/v1
-OPENAI_API_KEY=sk-my-key
-CUA_MODEL=qwen2.5-vl
-```
-
-Then run:
-
-```bash
-./run.sh up --env-file .env
-```
-
-### Accessing a Local Server from Inside the Container
-
-The base compose file maps `host.docker.internal` automatically, so
-the agent can reach services on your host machine:
-
-```bash
-# Serve the example page on your host
-cd example && python3 -m http.server 8080 &
-
-# Point the agent at it
-./run.sh agent "Open http://host.docker.internal:8080 in Chromium"
-```
-
-Set `OPENAI_BASE_URL` to a host-local LLM the same way:
-
-```bash
-OPENAI_BASE_URL=http://host.docker.internal:1234/v1
-```
-
-Docker Desktop (macOS/Windows) resolves `host.docker.internal`
-natively.  On Linux, the compose file adds `host-gateway` mapping.
-For Podman, `host.containers.internal` works natively.
-
-## Plugins
-
-The agent has a lightweight plugin system.  Plugins are plain Python
-files dropped into the `plugins/` directory.  Each file can define
-hook functions (`on_startup`, `on_post_llm_call`, `on_shutdown`, etc.)
-that the agent calls at natural points in the loop.
-
-Two bundled plugins ship with the agent:
-
-- **`plugins/audit.py`** — Saves screenshots and session
-  metadata to `/app/audit`.  Delete to disable.
-- **`plugins/usage_tracking.py`** — Tracks token usage and
-  prints per-step and session-level stats.  Delete to silence.
-
-An XMPP messaging plugin is also included:
-
-- **`plugins/xmpp/`** — Enables the agent to exchange messages with
-  a human user via XMPP.  See `plugins/xmpp/README.md`.  The
-  matching compose extension (`compose.d/xmpp/`) provides the
-  Prosody server — `./run.sh up` starts both automatically.
-
-### Using external plugins
-
-Place plugin files directly in `plugins/`, or mount a directory via
-a compose override:
-
-```yaml
-# compose.d/my-plugins/compose.yml
-services:
-  cua:
-    volumes:
-      - ./my-plugins:/app/plugins/custom
-```
-
-### Writing a plugin
-
-A plugin is a single `.py` file that defines one or more `on_*`
-functions.  Every hook receives a shared `ctx` dict as its first
-argument:
-
-```python
-# plugins/my_webhook.py
-
-import os, requests
-
-def on_startup(ctx):
-    ctx["webhook_url"] = os.environ.get("CUA_WEBHOOK")
-
-def on_task_complete(ctx, *, summary, result):
-    requests.post(ctx["webhook_url"], json={
-        "summary": summary,
-        "result": result,
-    })
-```
-
-Plugins can also replace core agent functions (LLM backend, screenshot
-method, command runner, command parser) by setting the corresponding
-key in `ctx` during `on_startup`.  See `plugins/README.md` for the
-full hook reference, `ctx` fields, and swappable function signatures.
-
-## Example Test Page
-
-The `example/` directory contains a self-contained HTML/JS test target
-with interactive widgets (counter, task manager, form validation,
-calculator, drag & drop, etc.).  It is useful for verifying the agent
-can interact with realistic UI elements.
-
-Serve it from your host and point the agent at it:
-
-```bash
-cd example && python3 -m http.server 8080
-# then inside the container:
-# run: chromium http://host.docker.internal:8080
-```
+MIT
