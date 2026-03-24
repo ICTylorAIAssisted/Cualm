@@ -619,6 +619,41 @@ def spawn_human(
     }
 
 
+# ── Incremental progress (crash-safe) ────────────────────────────
+
+PROGRESS_FILENAME = "progress.jsonl"
+
+
+def _progress_path(output_dir: str | Path) -> Path:
+    return Path(output_dir) / PROGRESS_FILENAME
+
+
+def load_progress(output_dir: str | Path) -> list[dict]:
+    """Load completed results from progress.jsonl."""
+    path = _progress_path(output_dir)
+    results = []
+    if not path.exists():
+        return results
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                results.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass  # skip corrupted lines
+    return results
+
+
+def append_progress(output_dir: str | Path, result: dict) -> None:
+    """Append one result to progress.jsonl (crash-safe)."""
+    path = _progress_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(result) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
 # ── Report formatting ─────────────────────────────────────────────
 
 
@@ -696,6 +731,39 @@ def run_benchmark(args: argparse.Namespace) -> None:
     if not tasks:
         print("No tasks matched the filters.", file=sys.stderr)
         sys.exit(1)
+
+    # ── Resume: load previous progress, skip completed tasks ──
+    resumed_results: list[dict] = []
+    if args.resume:
+        resumed_results = load_progress(args.output_dir)
+        if resumed_results:
+            done_ids = {r["task_id"] for r in resumed_results}
+            before = len(tasks)
+            tasks = [t for t in tasks if t["task_id"] not in done_ids]
+            passed = sum(1 for r in resumed_results if r.get("passed"))
+            print(f"  Resuming: {len(done_ids)} tasks already done "
+                  f"({passed} passed), {len(tasks)}/{before} remaining")
+            if not tasks:
+                print("All tasks already completed.")
+                # Still write the final report from resumed data
+                tasks_all = load_tasks(args.task_file, args)
+                output_dir = Path(args.output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                report = format_report(resumed_results, tasks_all, args)
+                output_path = output_dir / f"report_{int(time.time())}.json"
+                output_path.write_text(json.dumps(report, indent=2))
+                s = report["summary"]
+                print(f"Results: {s['success_rate']:.1%} ({s['passed']}/{s['total']})")
+                print(f"Full report: {output_path}")
+                return
+        else:
+            print("  Resume: no previous progress found, starting fresh")
+    else:
+        # Fresh run — clear stale progress so it doesn't contaminate
+        # a future --resume
+        progress = _progress_path(args.output_dir)
+        if progress.exists():
+            progress.unlink()
 
     client = docker.from_env()
 
@@ -823,6 +891,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
         else:
             result["passed"] = evaluate_task(raw_task, result)
 
+        # ── Save to progress file (crash-safe) ──
+        append_progress(args.output_dir, result)
+
         # ── Report ──
         with print_lock:
             completed_count[0] += 1
@@ -879,10 +950,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
                         tprint(f"  ⚠ Task {idx} raised: {e}")
 
         # Write report (even if interrupted — partial results are useful)
-        if results:
+        # Merge with resumed results for a complete picture
+        all_results = resumed_results + results
+        if all_results:
+            # Reload full task list for report (tasks may have been filtered)
+            all_tasks = load_tasks(args.task_file, args)
             output_dir = Path(args.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
-            report = format_report(results, tasks, args)
+            report = format_report(all_results, all_tasks, args)
             output_path = output_dir / f"report_{int(time.time())}.json"
             output_path.write_text(json.dumps(report, indent=2))
 
@@ -892,6 +967,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
             print(f"  Passed : {s['passed']}")
             print(f"  Failed : {s['failed']}")
             print(f"  Errored: {s['errored']}")
+            if resumed_results and results:
+                print(f"  (includes {len(resumed_results)} resumed "
+                      f"+ {len(results)} new)")
 
             if report["by_site"]:
                 print("\nBy site:")
@@ -1019,6 +1097,12 @@ def parse_args() -> argparse.Namespace:
         help="Run N tasks in parallel (default: 1). "
              "VNC ports auto-assigned starting from --vnc-port. "
              "Use -j0 to disable VNC in parallel mode.",
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from a previous run. Reads progress.jsonl in "
+             "--output-dir, skips already-completed tasks.",
     )
     # ── Human mode ──
     p.add_argument(

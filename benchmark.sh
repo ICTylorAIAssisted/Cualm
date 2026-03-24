@@ -4,10 +4,13 @@
 # Usage:
 #   ./benchmark.sh --site shopping --tasks 0-20
 #   ./benchmark.sh --site shopping --tasks 0-50 --parallel 4  # 4 tasks at once
+#   ./benchmark.sh --site shopping --tasks 0-50 --resume      # resume crashed run
 #   ./benchmark.sh --webarena-verified --tasks 0-50
 #   ./benchmark.sh --coverage                          # run coverage benchmark (bundled target)
 #   ./benchmark.sh --coverage --url http://localhost:3000  # custom target
 #   ./benchmark.sh --coverage-test                     # verify coverage tracking works
+#   ./benchmark.sh --trace benchmark/results/0/        # generate trace viewer for task 0
+#   ./benchmark.sh --trace benchmark/results/ --all     # generate viewers for all tasks
 #   ./benchmark.sh down          # stop sites + remove leftover containers
 #   ./benchmark.sh --cleanup     # remove leftover containers only
 #
@@ -35,6 +38,20 @@ if [ "${1:-}" = "down" ]; then
     echo "Cleaning up benchmark containers..."
     python3 benchmark/run.py --cleanup
     exit 0
+fi
+
+# ── "--trace" mode: generate trace viewer HTML ────────────────
+if [ "${1:-}" = "--trace" ]; then
+    shift
+    if [ $# -eq 0 ]; then
+        echo "Usage: ./benchmark.sh --trace <path> [--all] [-o output.html]"
+        echo ""
+        echo "  <path>  Session dir, task dir, or results dir (with --all)"
+        echo "  --all   Process all task dirs under <path>"
+        echo "  -o      Output file (default: trace.html in session dir)"
+        exit 1
+    fi
+    exec python3 benchmark/trace_viewer.py "$@"
 fi
 
 # ── "--coverage-test" mode: verify coverage tracking works ────
