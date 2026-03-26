@@ -2,3 +2,4 @@ openai>=1.0.0
 Pillow>=10.0.0
 typer
 websocket-client>=1.6.0
+playwright>=1.40.0

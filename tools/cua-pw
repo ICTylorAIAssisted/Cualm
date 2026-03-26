@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Interact with the browser via Playwright (element-based, no coordinates).
+
+Connects to the running Chromium instance via CDP. More reliable than
+coordinate-based clicking for dropdowns, form fields, and small targets.
+
+Supports element refs from the accessibility tree (e.g. e15) for
+the most reliable interaction — no selector construction needed.
+
+Usage:
+  cua-pw click e15                        Click by ref from a11y tree
+  cua-pw click "text=Show Report"         Click element by text
+  cua-pw click "role=button[name=Submit]"  Click by ARIA role
+  cua-pw click "#my-id"                   Click by CSS selector
+  cua-pw fill e12 "test@example.com"       Fill field by ref
+  cua-pw fill "#email" "test@example.com"  Clear and fill a field
+  cua-pw select e9 "Year"                 Select dropdown option by ref
+  cua-pw select "#period" "Year"          Select dropdown option by label
+  cua-pw select "#period" --value "yr"    Select by value attribute
+  cua-pw check e20                        Check checkbox by ref
+  cua-pw check "#terms"                   Check a checkbox
+  cua-pw uncheck "#newsletter"            Uncheck a checkbox
+  cua-pw text e21                         Extract text by ref
+  cua-pw text "table"                     Extract table text
+  cua-pw hover "text=Menu"               Hover over element
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.request
+
+# Suppress Node.js deprecation warnings from Playwright's bundled runtime
+# (e.g. DEP0169 url.parse) — they waste tokens in command output.
+os.environ["NODE_NO_WARNINGS"] = "1"
+
+import typer
+from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+import websocket as ws_lib
+
+app = typer.Typer(add_completion=False)
+
+CDP_URL = "http://127.0.0.1:9222"
+CDP_HOST = "127.0.0.1"
+CDP_PORT = 9222
+DEFAULT_TIMEOUT = 5000  # ms
+REF_FILE = "/tmp/cua_a11y_refs.json"
+
+# Pattern for ref IDs: e1, e15, e200, etc.
+REF_PATTERN = re.compile(r"^e\d+$")
+
+
+def _get_page():
+    """Connect to the running Chromium and return the active page."""
+    pw = sync_playwright().start()
+    browser = pw.chromium.connect_over_cdp(CDP_URL)
+    contexts = browser.contexts
+    if not contexts:
+        raise RuntimeError("No browser contexts found")
+    pages = contexts[0].pages
+    if not pages:
+        raise RuntimeError("No pages found")
+    for page in pages:
+        url = page.url
+        if not url.startswith(("chrome-extension://", "devtools://", "chrome://")):
+            return page, pw
+    return pages[0], pw
+
+
+def _get_ws_url() -> str:
+    """Get CDP websocket URL for the active page tab."""
+    url = f"http://{CDP_HOST}:{CDP_PORT}/json"
+    with urllib.request.urlopen(url, timeout=3) as resp:
+        tabs = json.loads(resp.read())
+    for tab in tabs:
+        if tab.get("type") == "page" and not tab.get("url", "").startswith(
+            ("chrome-extension://", "devtools://", "chrome://")
+        ):
+            ws_url = tab.get("webSocketDebuggerUrl")
+            if ws_url:
+                return ws_url
+    raise RuntimeError("No browser tab found")
+
+
+def _cdp_call(ws, method: str, params: dict = None, msg_id: int = 1) -> dict:
+    msg = {"id": msg_id, "method": method}
+    if params:
+        msg["params"] = params
+    ws.send(json.dumps(msg))
+    while True:
+        raw = ws.recv()
+        resp = json.loads(raw)
+        if resp.get("id") == msg_id:
+            return resp
+
+
+def _tag_ref_element(backend_dom_node_id: int) -> bool:
+    """Use CDP to tag an element with data-cua-ref='active'.
+
+    This lets Playwright find it via a simple CSS selector.
+    Returns True on success.
+    """
+    ws_url = _get_ws_url()
+    ws = ws_lib.create_connection(ws_url, timeout=5)
+    try:
+        # Resolve the backend node to a JS object
+        resp = _cdp_call(ws, "DOM.resolveNode", {
+            "backendNodeId": backend_dom_node_id,
+        }, msg_id=1)
+        object_id = resp.get("result", {}).get("object", {}).get("objectId")
+        if not object_id:
+            return False
+
+        # Tag it with a data attribute Playwright can find
+        _cdp_call(ws, "Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "functionDeclaration": """function() {
+                // Clear any previous ref tag
+                var old = document.querySelector('[data-cua-ref="active"]');
+                if (old) old.removeAttribute('data-cua-ref');
+                this.setAttribute('data-cua-ref', 'active');
+            }""",
+        }, msg_id=2)
+        return True
+    except Exception:
+        return False
+    finally:
+        ws.close()
+
+
+def _resolve(page, selector: str):
+    """Resolve a selector string to a Playwright locator.
+
+    Supports:
+      "e15"                          → ref from accessibility tree
+      "text=Show Report"             → page.get_by_text("Show Report")
+      "role=button[name=Submit]"     → page.get_by_role("button", name="Submit")
+      "label=Email"                  → page.get_by_label("Email")
+      "placeholder=Search..."        → page.get_by_placeholder("Search...")
+      "#id" / ".class" / "tag"       → page.locator(css_selector)
+      "xpath=//div[@id='x']"         → page.locator(xpath)
+    """
+    s = selector.strip()
+
+    # Ref-based selector: e15, e3, etc.
+    if REF_PATTERN.match(s):
+        # Load ref registry
+        if not os.path.isfile(REF_FILE):
+            raise RuntimeError(f"Ref file not found: {REF_FILE}. "
+                             "The accessibility tree must be fetched first.")
+        with open(REF_FILE) as f:
+            refs = json.load(f)
+        if s not in refs:
+            available = ", ".join(sorted(refs.keys(), key=lambda x: int(x[1:])))
+            raise RuntimeError(f"Ref '{s}' not found. Available: {available}")
+        ref_info = refs[s]
+        backend_id = ref_info["backendDOMNodeId"]
+        if not _tag_ref_element(backend_id):
+            raise RuntimeError(f"Could not resolve ref '{s}' to a DOM element "
+                             f"(role={ref_info.get('role')}, "
+                             f"name={ref_info.get('name')})")
+        return page.locator("[data-cua-ref='active']")
+
+    if s.startswith("text="):
+        return page.get_by_text(s[5:])
+    if s.startswith("label="):
+        return page.get_by_label(s[6:])
+    if s.startswith("placeholder="):
+        return page.get_by_placeholder(s[12:])
+    if s.startswith("role="):
+        role_part = s[5:]
+        if "[" in role_part:
+            role = role_part[:role_part.index("[")]
+            attrs_str = role_part[role_part.index("[") + 1:].rstrip("]")
+            kwargs = {}
+            for attr in attrs_str.split(","):
+                attr = attr.strip()
+                if "=" in attr:
+                    k, v = attr.split("=", 1)
+                    kwargs[k.strip()] = v.strip().strip("'\"")
+            return page.get_by_role(role, **kwargs)
+        return page.get_by_role(role_part)
+    if s.startswith("xpath="):
+        return page.locator(s)
+    # CSS selector
+    return page.locator(s)
+
+
+@app.command()
+def click(
+    selector: str = typer.Argument(help="Element selector"),
+    timeout: int = typer.Option(DEFAULT_TIMEOUT, help="Timeout in ms"),
+) -> None:
+    """Click an element by selector."""
+    page, pw = _get_page()
+    try:
+        loc = _resolve(page, selector)
+        loc.click(timeout=timeout)
+        typer.echo(f"Clicked: {selector}")
+    except PwTimeout:
+        typer.echo(f"Error: Element not found within {timeout}ms: {selector}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        pw.stop()
+
+
+@app.command()
+def fill(
+    selector: str = typer.Argument(help="Input field selector"),
+    value: str = typer.Argument(help="Text to fill"),
+    timeout: int = typer.Option(DEFAULT_TIMEOUT, help="Timeout in ms"),
+) -> None:
+    """Clear and fill a form field."""
+    page, pw = _get_page()
+    try:
+        loc = _resolve(page, selector)
+        loc.fill(value, timeout=timeout)
+        # Read back the value to confirm
+        actual = loc.input_value(timeout=1000)
+        typer.echo(f"Filled: {selector} = \"{actual}\"")
+    except PwTimeout:
+        typer.echo(f"Error: Element not found within {timeout}ms: {selector}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        pw.stop()
+
+
+@app.command("select")
+def select_option(
+    selector: str = typer.Argument(help="Select element selector"),
+    option: str = typer.Argument(help="Option label to select"),
+    value: bool = typer.Option(False, "--value", "-v",
+                               help="Match by value attribute instead of label"),
+    timeout: int = typer.Option(DEFAULT_TIMEOUT, help="Timeout in ms"),
+) -> None:
+    """Select a dropdown option by label or value."""
+    page, pw = _get_page()
+    try:
+        loc = _resolve(page, selector)
+        if value:
+            loc.select_option(value=option, timeout=timeout)
+        else:
+            loc.select_option(label=option, timeout=timeout)
+        # Read back
+        time.sleep(0.1)
+        selected = loc.evaluate("el => el.options[el.selectedIndex]?.text || el.value")
+        typer.echo(f"Selected: {selector} → \"{selected}\"")
+    except PwTimeout:
+        typer.echo(f"Error: Element not found within {timeout}ms: {selector}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        pw.stop()
+
+
+@app.command()
+def check(
+    selector: str = typer.Argument(help="Checkbox selector"),
+    timeout: int = typer.Option(DEFAULT_TIMEOUT, help="Timeout in ms"),
+) -> None:
+    """Check a checkbox (no-op if already checked)."""
+    page, pw = _get_page()
+    try:
+        loc = _resolve(page, selector)
+        loc.check(timeout=timeout)
+        typer.echo(f"Checked: {selector}")
+    except PwTimeout:
+        typer.echo(f"Error: Element not found within {timeout}ms: {selector}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        pw.stop()
+
+
+@app.command()
+def uncheck(
+    selector: str = typer.Argument(help="Checkbox selector"),
+    timeout: int = typer.Option(DEFAULT_TIMEOUT, help="Timeout in ms"),
+) -> None:
+    """Uncheck a checkbox (no-op if already unchecked)."""
+    page, pw = _get_page()
+    try:
+        loc = _resolve(page, selector)
+        loc.uncheck(timeout=timeout)
+        typer.echo(f"Unchecked: {selector}")
+    except PwTimeout:
+        typer.echo(f"Error: Element not found within {timeout}ms: {selector}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        pw.stop()
+
+
+@app.command()
+def text(
+    selector: str = typer.Argument(help="Element selector"),
+    timeout: int = typer.Option(DEFAULT_TIMEOUT, help="Timeout in ms"),
+) -> None:
+    """Extract text content from an element."""
+    page, pw = _get_page()
+    try:
+        loc = _resolve(page, selector)
+        content = loc.inner_text(timeout=timeout)
+        typer.echo(content)
+    except PwTimeout:
+        typer.echo(f"Error: Element not found within {timeout}ms: {selector}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        pw.stop()
+
+
+@app.command()
+def hover(
+    selector: str = typer.Argument(help="Element selector"),
+    timeout: int = typer.Option(DEFAULT_TIMEOUT, help="Timeout in ms"),
+) -> None:
+    """Hover over an element (useful for menus and tooltips)."""
+    page, pw = _get_page()
+    try:
+        loc = _resolve(page, selector)
+        loc.hover(timeout=timeout)
+        typer.echo(f"Hovered: {selector}")
+    except PwTimeout:
+        typer.echo(f"Error: Element not found within {timeout}ms: {selector}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        pw.stop()
+
+
+if __name__ == "__main__":
+    app()

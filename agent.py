@@ -140,6 +140,29 @@ Browser JS (cua-cdp-js) — fast data extraction:
   For visual debugging (CSS issues, layout), open DevTools with F12.
   Dock it to the bottom or right so you can see both page and console.
 
+Element-based interaction (cua-pw) — reliable clicks and form filling:
+  Use cua-pw instead of cua-click for reliable element interaction.
+  Interactive elements in the accessibility tree have [ref=eN] tags.
+  PREFER refs — they are the most reliable way to interact:
+    run: cua-pw click e15              (click element with ref=e15)
+    run: cua-pw fill e12 "hello"       (fill input with ref=e12)
+    run: cua-pw select e9 "Year"       (select option in dropdown e9)
+    run: cua-pw check e20              (check checkbox e20)
+  Read the accessibility tree, find the [ref=eN] for the element you
+  want, then use that ref with cua-pw. This is more reliable than
+  coordinate clicking or constructing selectors.
+  When refs are not available, use text/label/CSS selectors as fallback:
+    run: cua-pw click "text=Show Report"
+    run: cua-pw fill "label=Email" "admin@example.com"
+    run: cua-pw select "label=Period" "Year"
+    run: cua-pw check "label=I agree to the terms"
+    run: cua-pw text "table"
+  Use cua-click ONLY when you need pixel coordinates (e.g. clicking
+  a specific spot on an image, map, or unlabeled visual element).
+  cua-pw automatically waits for elements, scrolls them into view,
+  and verifies they are clickable before acting. For fill, it clears
+  the field first and reads back the value to confirm.
+
 Status bar (bottom of screen):
   A thin bar at the bottom of every page shows:
     scroll: 45% ↓1200px left │ page: 3400px (4.2 screens) │ dom: changed 2s ago │ focus: input#email │ url: /settings/profile
@@ -160,6 +183,8 @@ Accessibility tree (included with each screenshot):
   - Find elements that are off-screen or hard to read in the screenshot
   - Identify the exact text content of table cells, headings, links
   - Check form field values and states
+  Interactive elements have [ref=eN] tags — use these with cua-pw
+  for reliable interaction: run: cua-pw click e15
   The tree is truncated for long pages — use cua-cdp-js for deeper queries.
 
 Page awareness:
@@ -180,14 +205,18 @@ Reports and filters:
   miss but dramatically affect results. Wrong settings can produce
   hundreds of rows instead of a useful summary.
 
-Form interaction — clear first, verify after:
-  ALWAYS follow this sequence for each form field:
+Form interaction — prefer cua-pw, verify after:
+  PREFERRED: Use cua-pw for form fields — it clears and fills reliably:
+    run: cua-pw fill "label=From" "01/01/2022"
+    run: cua-pw select "label=Period" "Year"
+    run: cua-pw check "label=I agree"
+  FALLBACK (when cua-pw can't find the element):
     1. Click the field (or check focus: in status bar)
     2. Clear it: Ctrl+A, Delete, then type the new value
     3. Verify with cua-cdp-js: check the field actually has the right value
-  Example for a date field:
-    run: cua-click 400 300 && cua-key ctrl+a && cua-key Delete && cua-type "03/15/2024"
-    run: cua-cdp-js "document.activeElement.value"
+    Example:
+      run: cua-click 400 300 && cua-key ctrl+a && cua-key Delete && cua-type "03/15/2024"
+      run: cua-cdp-js "document.activeElement.value"
   If the value doesn't match what you typed, the form transformed your
   input. Compare character by character to understand the format:
     Typed: "01-15-2023"  →  Field shows: "01152023"  →  Dashes stripped
@@ -228,10 +257,18 @@ Examples:
 Login example (click username, type, Tab to password, type, Enter):
   run: cua-click 450 250
   run: cua-type "myuser" && cua-key Tab && cua-type "mypass" && cua-key Return
+  Or with cua-pw refs (preferred — find refs in the a11y tree):
+  run: cua-pw fill e3 "myuser" && cua-pw fill e4 "mypass" && cua-pw click e5
 
-Form filling example (clear field, type, verify):
+Form filling example (using refs from the a11y tree):
+  run: cua-pw fill e12 "new@example.com"
+  Fallback with coordinates (when ref not available):
   run: cua-click 400 300 && cua-key ctrl+a && cua-key Delete && cua-type "new value"
   run: cua-cdp-js "document.activeElement.value"
+
+Dropdown example (select option by ref or label):
+  run: cua-pw select e9 "Year"
+  run: cua-pw select "label=Period" "Year"
 
 Data extraction example (read page content and table data via JS):
   run: cua-cdp-js "document.title + ' — ' + document.querySelector('h1')?.innerText"

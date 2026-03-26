@@ -35,6 +35,16 @@ INTERESTING_ROLES = frozenset({
     "searchbox", "slider", "spinbutton", "treeitem",
 })
 
+# Roles that get a ref ID for element-based interaction
+INTERACTIVE_ROLES = frozenset({
+    "link", "button", "textbox", "combobox", "checkbox", "radio",
+    "menuitem", "tab", "option", "switch", "searchbox", "slider",
+    "spinbutton", "treeitem",
+})
+
+# Ref registry saved here for cua-pw to read
+REF_FILE = "/tmp/cua_a11y_refs.json"
+
 
 def _get_page_ws_url() -> str:
     """Get the websocket URL for the first real page tab."""
@@ -101,9 +111,9 @@ def _build_tree(nodes: list[dict]) -> dict:
                 for p in node.get("properties", [])
             },
             "children": [],
-            # childIds is a flat list of string IDs in CDP
             "child_ids": node.get("childIds", []),
             "_id": nid,
+            "_backend_dom_node_id": node.get("backendDOMNodeId"),
         }
 
     # Link children
@@ -138,8 +148,12 @@ def _should_show(node: dict) -> bool:
     return bool(node.get("children"))
 
 
-def _format_node(node: dict) -> str:
-    """Format a single node as a compact string."""
+def _format_node(node: dict, ref_state: dict | None = None) -> str:
+    """Format a single node as a compact string.
+
+    If ref_state is provided and the node has an interactive role,
+    assigns a ref ID (e.g. [ref=e5]) and records the mapping.
+    """
     role = node.get("role", "")
     name = str(node.get("name", ""))
     value = str(node.get("value", ""))
@@ -148,7 +162,6 @@ def _format_node(node: dict) -> str:
     parts = [role]
 
     if name:
-        # Truncate long names (e.g. paragraph text)
         display_name = name if len(name) <= 60 else name[:57] + "..."
         parts.append(f"'{display_name}'")
 
@@ -172,11 +185,26 @@ def _format_node(node: dict) -> str:
     if props.get("required") == "true":
         parts.append("[required]")
 
+    # Assign ref to interactive elements
+    if ref_state is not None and role in INTERACTIVE_ROLES:
+        backend_id = node.get("_backend_dom_node_id")
+        if backend_id is not None:
+            ref_id = ref_state["counter"]
+            ref_state["counter"] += 1
+            ref_key = f"e{ref_id}"
+            parts.append(f"[ref={ref_key}]")
+            ref_state["refs"][ref_key] = {
+                "backendDOMNodeId": backend_id,
+                "role": role,
+                "name": name[:60],
+            }
+
     return " ".join(parts)
 
 
 def _render_tree(node: dict, depth: int, lines: list[str],
-                 max_children: int, max_depth: int, max_lines: int) -> None:
+                 max_children: int, max_depth: int, max_lines: int,
+                 ref_state: dict | None = None) -> None:
     """Recursively render the tree with truncation."""
     if len(lines) >= max_lines:
         return
@@ -187,11 +215,11 @@ def _render_tree(node: dict, depth: int, lines: list[str],
         # Skip this node but still recurse into children
         for child in node.get("children", []):
             _render_tree(child, depth, lines,
-                        max_children, max_depth, max_lines)
+                        max_children, max_depth, max_lines, ref_state)
         return
 
     prefix = INDENT * depth
-    formatted = _format_node(node)
+    formatted = _format_node(node, ref_state)
     lines.append(f"{prefix}{formatted}")
 
     children = node.get("children", [])
@@ -212,7 +240,7 @@ def _render_tree(node: dict, depth: int, lines: list[str],
             lines.append(f"{prefix}{INDENT}... ({remaining} more children not shown, {total} total)")
             return
         _render_tree(child, depth + 1, lines,
-                    max_children, max_depth, max_lines)
+                    max_children, max_depth, max_lines, ref_state)
 
     if total > show:
         lines.append(f"{prefix}{INDENT}... (showing {show}/{total} children)")
@@ -223,6 +251,10 @@ def get_a11y_text(max_children: int = MAX_CHILDREN_SHOWN,
                   max_depth: int = MAX_DEPTH) -> str:
     """Fetch and format the accessibility tree as truncated text.
 
+    Interactive elements get ref IDs (e.g. [ref=e5]) that can be used
+    with cua-pw for reliable element-based interaction. The ref→element
+    mapping is saved to REF_FILE for tool resolution.
+
     Returns empty string on any failure (CDP not available, etc.).
     """
     try:
@@ -232,12 +264,21 @@ def get_a11y_text(max_children: int = MAX_CHILDREN_SHOWN,
         root = _build_tree(nodes)
         if not root:
             return ""
+
+        ref_state = {"counter": 1, "refs": {}}
         lines: list[str] = []
-        _render_tree(root, 0, lines, max_children, max_depth, max_lines)
+        _render_tree(root, 0, lines, max_children, max_depth, max_lines,
+                     ref_state)
         if not lines:
             return ""
 
-        # Add header
+        # Save ref registry for cua-pw
+        try:
+            with open(REF_FILE, "w") as f:
+                json.dump(ref_state["refs"], f)
+        except Exception:
+            pass
+
         result = "Accessibility tree:\n" + "\n".join(lines)
 
         if len(lines) >= max_lines:
@@ -245,7 +286,6 @@ def get_a11y_text(max_children: int = MAX_CHILDREN_SHOWN,
 
         return result
     except Exception as e:
-        # CDP not available, page not loaded, etc. — log but don't crash
         import sys
         print(f"   [a11y] {type(e).__name__}: {e}", file=sys.stderr)
         return ""

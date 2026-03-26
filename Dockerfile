@@ -59,6 +59,10 @@ RUN find /app/plugins -name 'requirements.txt' -exec \
 # Tools import cua_config as a module — make sure /app is on PYTHONPATH
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 ENV PATH="/app/tools:${PATH}"
+# Playwright: we connect to the existing Chromium via CDP, no browser download needed
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+# Suppress Node.js deprecation warnings (e.g. DEP0169 from Playwright's runtime)
+ENV NODE_NO_WARNINGS=1
 
 WORKDIR /app
 ENTRYPOINT ["/app/start.sh"]
