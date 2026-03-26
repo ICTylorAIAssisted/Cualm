@@ -64,6 +64,28 @@ if [ -n "${CUA_HTTP_PROXY:-}" ]; then
     PROXY_ARGS="--proxy-server=$CUA_HTTP_PROXY --proxy-bypass-list=<-loopback>"
 fi
 
+# Set up Chrome profile with password manager disabled
+CHROME_PROFILE="/tmp/chrome-profile"
+mkdir -p "$CHROME_PROFILE/Default"
+cat > "$CHROME_PROFILE/Default/Preferences" << 'PREFS'
+{
+  "credentials_enable_service": false,
+  "profile": {
+    "password_manager_enabled": false,
+    "default_content_setting_values": {
+      "notifications": 2
+    }
+  },
+  "autofill": {
+    "profile_enabled": false,
+    "credit_card_enabled": false
+  },
+  "translate": {
+    "enabled": false
+  }
+}
+PREFS
+
 # Chromium — note: just "chromium" on Debian, not "chromium-browser"
 # --test-type suppresses the "developer mode extensions" warning banner
 chromium \
@@ -80,6 +102,9 @@ chromium \
     --load-extension=/app/extensions/cua-hud \
     --window-size="${SCREEN_WIDTH},${SCREEN_HEIGHT}" \
     --start-maximized \
+    --user-data-dir="$CHROME_PROFILE" \
+    --password-store=basic \
+    --disable-features=PasswordManager,TranslateUI,AutofillServerCommunication \
     $PROXY_ARGS \
     "$START_URL" 2>/dev/null &
 sleep 2

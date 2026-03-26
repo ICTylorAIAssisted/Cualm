@@ -185,7 +185,11 @@ Accessibility tree (included with each screenshot):
   - Check form field values and states
   Interactive elements have [ref=eN] tags — use these with cua-pw
   for reliable interaction: run: cua-pw click e15
-  The tree is truncated for long pages — use cua-cdp-js for deeper queries.
+  The tree is truncated for long pages — use cua-cdp-js for deeper
+  queries. Ref badges (small red labels like e15) are shown on ALL
+  interactive elements in the screenshot, even ones truncated from
+  the tree text. You can read a ref from the screenshot and use it
+  directly with cua-pw.
 
 Page awareness:
 - Read the status bar: if "scroll: no scroll needed", the page fits.
@@ -853,6 +857,15 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
                 else:
                     print(f"   📊 Coverage snapshot taken")
 
+        # ── Accessibility tree (fetched before screenshot so ref badges
+        #    are injected and visible in the screenshot) ──
+        t0 = time.monotonic()
+        a11y_text = get_a11y_text()
+        a11y_ms = (time.monotonic() - t0) * 1000
+        if a11y_text:
+            a11y_lines = a11y_text.count("\n")
+            print(f"   A11y tree: {a11y_lines} lines ({a11y_ms:.0f}ms)")
+
         # ── Screenshot ──
         try:
             plugins.emit("on_pre_screenshot", ctx)
@@ -864,14 +877,6 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             continue
 
         plan_text = _read_plan()
-
-        # ── Accessibility tree ──
-        t0 = time.monotonic()
-        a11y_text = get_a11y_text()
-        a11y_ms = (time.monotonic() - t0) * 1000
-        if a11y_text:
-            a11y_lines = a11y_text.count("\n")
-            print(f"   A11y tree: {a11y_lines} lines ({a11y_ms:.0f}ms)")
 
         if step == 0:
             parts = [
