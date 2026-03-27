@@ -87,19 +87,19 @@ starting with "run: ". Everything after "run: " is executed in a shell.
 
 Be efficient — minimize the number of steps. Chain related actions in
 a single command with && when you don't need a screenshot in between:
-  run: cua-click 450 250 && cua-type "admin" && cua-key Tab && cua-type "pass" && cua-key Return
+  run: cua-click 450 250 && cua-type "myuser" && cua-key Tab && cua-type "mypass" && cua-key Return
 Each step costs time, so batch actions that logically belong together.
 
 Planning:
   On your FIRST step, create a plan before doing anything else.
   Use | to separate steps. Rewrite the FULL plan each time to update:
-    run: cua-plan "Login | Navigate to reports | Filter data | Read results | Report answer"
+    run: cua-plan "Step A | Step B | Step C | Step D"
   After completing a step, rewrite with [DONE] markers:
-    run: cua-plan "[DONE] Login | Navigate to reports | Filter data | Read results | Report answer"
+    run: cua-plan "[DONE] Step A | Step B | Step C | Step D"
   To restructure (add/remove/split steps), just rewrite the whole plan:
-    run: cua-plan "[DONE] Login | [DONE] Navigate | Set date range | Choose grouping | Click generate | Read results | Report answer"
+    run: cua-plan "[DONE] Step A | [DONE] Step B | Step B1 | Step B2 | Step C | Step D"
   If a step fails, mark it [FAIL] and add a new approach:
-    run: cua-plan "[DONE] Login | [DONE] Navigate | [FAIL] Click generate | Use JS to extract data | Report answer"
+    run: cua-plan "[DONE] Step A | [DONE] Step B | [FAIL] Step C | Try alternative | Step D"
   Do NOT mark a step [DONE] until its result is fully visible/confirmed.
   Your current plan is shown with each screenshot — use it to stay
   on track and avoid repeating failed approaches.
@@ -146,15 +146,15 @@ Element-based interaction (cua-pw) — reliable clicks and form filling:
   PREFER refs — they are the most reliable way to interact:
     run: cua-pw click e15              (click element with ref=e15)
     run: cua-pw fill e12 "hello"       (fill input with ref=e12)
-    run: cua-pw select e9 "Year"       (select option in dropdown e9)
+    run: cua-pw select e9 "Option B"   (select option in dropdown e9)
     run: cua-pw check e20              (check checkbox e20)
   Read the accessibility tree, find the [ref=eN] for the element you
   want, then use that ref with cua-pw. This is more reliable than
   coordinate clicking or constructing selectors.
   When refs are not available, use text/label/CSS selectors as fallback:
-    run: cua-pw click "text=Show Report"
-    run: cua-pw fill "label=Email" "admin@example.com"
-    run: cua-pw select "label=Period" "Year"
+    run: cua-pw click "text=Submit"
+    run: cua-pw fill "label=Name" "John Smith"
+    run: cua-pw select "label=Country" "Canada"
     run: cua-pw check "label=I agree to the terms"
     run: cua-pw text "table"
   Use cua-click ONLY when you need pixel coordinates (e.g. clicking
@@ -202,18 +202,16 @@ Page awareness:
 - If you need to find something on a long page, use Ctrl+F to search
   rather than scrolling through it manually.
 
-Reports and filters:
-- When generating reports or searching with filters, check ALL filter
-  options before submitting — not just the obvious ones like date range.
-  Dropdowns for grouping, aggregation, sorting, or category are easy to
-  miss but dramatically affect results. Wrong settings can produce
-  hundreds of rows instead of a useful summary.
+Forms with multiple controls:
+- When submitting a form with several fields, check ALL options before
+  submitting — not just the obvious ones. Dropdowns, toggles, and
+  secondary settings are easy to miss but can dramatically affect results.
 
 Form interaction — prefer cua-pw, verify after:
   PREFERRED: Use cua-pw for form fields — it clears and fills reliably:
-    run: cua-pw fill "label=From" "01/01/2022"
-    run: cua-pw select "label=Period" "Year"
-    run: cua-pw check "label=I agree"
+    run: cua-pw fill e12 "some value"
+    run: cua-pw select e9 "Option A"
+    run: cua-pw check e20
   FALLBACK (when cua-pw can't find the element):
     1. Click the field (or check focus: in status bar)
     2. Clear it: Ctrl+A, Delete, then type the new value
@@ -224,7 +222,7 @@ Form interaction — prefer cua-pw, verify after:
   If the value doesn't match what you typed, the form transformed your
   input. Compare character by character to understand the format:
     Typed: "01-15-2023"  →  Field shows: "01152023"  →  Dashes stripped
-    Typed: "admin"       →  Field shows: "adminadmin" → Field wasn't empty
+    Typed: "hello"       →  Field shows: "hellohello" → Field wasn't empty
   When you encounter a form with multiple fields, expand your plan to
   include filling AND verifying each field as separate sub-steps.
   Never submit a form without verifying all fields are correct first.
@@ -240,6 +238,21 @@ result may be below the viewport.
 
 When the task is complete, use the cua-done tool with a summary.
 When asked to find or report a value, pass it via --result.
+  --result should contain ONLY the answer, as concisely as possible:
+    GOOD: --result "Foo Widget, Bar Gadget"
+    BAD:  --result "1. Foo Widget™ (5 units), 2. Bar Gadget (4 units)"
+  Strip special characters (™, ®, ©), numbering, units, and formatting.
+  If asked for a list, use comma-separated plain names.
+  If asked for a number, return just the number: --result "42.50"
+  If asked for a URL, return just the URL: --result "https://..."
+Before reporting a result, sanity-check it against the task:
+  - Does the data actually cover the time period asked about?
+  - If the UI doesn't offer the exact filter you need, try a different
+    approach — use a finer granularity and aggregate, or extract raw
+    data with cua-cdp-js and compute the answer yourself.
+  - If the result seems too large, too small, or doesn't match what
+    the task is asking, your approach may be wrong. Revise your plan
+    rather than reporting a suspicious answer.
 When the task involves showing something visual, add --screenshot to
 include a capture of the current screen in the result.
 You will see the output of your previous command alongside each new
@@ -265,14 +278,14 @@ Login example (click username, type, Tab to password, type, Enter):
   run: cua-pw fill e3 "myuser" && cua-pw fill e4 "mypass" && cua-pw click e5
 
 Form filling example (using refs from the a11y tree):
-  run: cua-pw fill e12 "new@example.com"
+  run: cua-pw fill e12 "new value"
   Fallback with coordinates (when ref not available):
   run: cua-click 400 300 && cua-key ctrl+a && cua-key Delete && cua-type "new value"
   run: cua-cdp-js "document.activeElement.value"
 
 Dropdown example (select option by ref or label):
-  run: cua-pw select e9 "Year"
-  run: cua-pw select "label=Period" "Year"
+  run: cua-pw select e9 "Option B"
+  run: cua-pw select "label=Country" "Canada"
 
 Data extraction example (read page content and table data via JS):
   run: cua-cdp-js "document.title + ' — ' + document.querySelector('h1')?.innerText"
@@ -314,17 +327,45 @@ def _get_client() -> OpenAI:
 
 def default_llm_call(ctx: dict, messages: list[ChatCompletionMessageParam]) -> str:
     """Call the LLM via OpenAI-compatible API."""
+    import math
+
     client = _get_client()
     t0 = time.monotonic()
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=LLM_MAX_TOKENS,
-        messages=messages,
-        temperature=LLM_TEMPERATURE,
-        top_p=LLM_TOP_P,
-        presence_penalty=LLM_PRESENCE_PENALTY,
-        extra_body=LLM_EXTRA_PARAMS or None,
-    )
+
+    # Request logprobs if the backend supports it.
+    # Some backends (older llama.cpp) may not — we catch and retry without.
+    logprobs_kwargs = {}
+    if not getattr(default_llm_call, "_logprobs_disabled", False):
+        logprobs_kwargs = {"logprobs": True, "top_logprobs": 5}
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            max_tokens=LLM_MAX_TOKENS,
+            messages=messages,
+            temperature=LLM_TEMPERATURE,
+            top_p=LLM_TOP_P,
+            presence_penalty=LLM_PRESENCE_PENALTY,
+            extra_body=LLM_EXTRA_PARAMS or None,
+            **logprobs_kwargs,
+        )
+    except Exception as e:
+        if logprobs_kwargs and "logprobs" in str(e).lower():
+            # Backend doesn't support logprobs — disable and retry
+            default_llm_call._logprobs_disabled = True
+            print("   [debug] Logprobs not supported, disabling")
+            response = client.chat.completions.create(
+                model=MODEL,
+                max_tokens=LLM_MAX_TOKENS,
+                messages=messages,
+                temperature=LLM_TEMPERATURE,
+                top_p=LLM_TOP_P,
+                presence_penalty=LLM_PRESENCE_PENALTY,
+                extra_body=LLM_EXTRA_PARAMS or None,
+            )
+        else:
+            raise
+
     elapsed = time.monotonic() - t0
 
     content = response.choices[0].message.content
@@ -352,6 +393,8 @@ def default_llm_call(ctx: dict, messages: list[ChatCompletionMessageParam]) -> s
         if extra_keys:
             print(f"   [debug] Extra fields: {extra_keys}")
         print(f"   [debug] Reasoning captured: {bool(reasoning)}")
+        has_lp = response.choices[0].logprobs is not None
+        print(f"   [debug] Logprobs available: {has_lp}")
 
     if reasoning:
         content = f"<think>{reasoning}</think>\n{content}"
@@ -359,12 +402,52 @@ def default_llm_call(ctx: dict, messages: list[ChatCompletionMessageParam]) -> s
     if not content.strip():
         raise ValueError("LLM returned empty content")
 
+    # ── Extract logprobs and compute entropy stats ──
+    entropy_stats = {}
+    choice_logprobs = response.choices[0].logprobs
+    if choice_logprobs and hasattr(choice_logprobs, "content") and choice_logprobs.content:
+        token_entropies = []
+        low_conf_tokens = []  # tokens with highest entropy
+
+        for tok_info in choice_logprobs.content:
+            # tok_info.top_logprobs is a list of {token, logprob}
+            top_lps = tok_info.top_logprobs or []
+            if top_lps:
+                # Compute entropy from top logprobs:
+                # H = -sum(p * log(p)) where p = exp(logprob)
+                probs = [math.exp(lp.logprob) for lp in top_lps
+                         if lp.logprob is not None]
+                if probs:
+                    # Normalize in case they don't sum to 1
+                    total = sum(probs)
+                    if total > 0:
+                        probs = [p / total for p in probs]
+                    h = -sum(p * math.log2(p) for p in probs if p > 0)
+                    token_entropies.append(h)
+                    if h > 1.5:  # high uncertainty threshold
+                        low_conf_tokens.append({
+                            "token": tok_info.token,
+                            "entropy": round(h, 3),
+                            "top1_prob": round(probs[0], 3) if probs else 0,
+                        })
+
+        if token_entropies:
+            entropy_stats = {
+                "mean_entropy": round(sum(token_entropies) / len(token_entropies), 3),
+                "max_entropy": round(max(token_entropies), 3),
+                "min_entropy": round(min(token_entropies), 3),
+                "high_entropy_count": sum(1 for h in token_entropies if h > 1.5),
+                "total_tokens_with_logprobs": len(token_entropies),
+                "low_confidence_tokens": low_conf_tokens[:10],  # top 10
+            }
+
     # Stash usage info for the hook
     ctx["_last_usage"] = {
         "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
         "completion_tokens": response.usage.completion_tokens if response.usage else 0,
         "total_tokens": response.usage.total_tokens if response.usage else 0,
         "elapsed_sec": elapsed,
+        "entropy": entropy_stats,
     }
     return content
 

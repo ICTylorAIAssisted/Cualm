@@ -157,6 +157,31 @@ def cdp_js(
         typer.echo("Empty expression", err=True)
         raise typer.Exit(1)
 
+    # ── Auto-fix common mistakes ──
+    # Replace const/let with var — CDP execution context persists
+    # across calls, so const/let re-declarations throw SyntaxError.
+    import re as _re
+    expression = _re.sub(r'\bconst\s+', 'var ', expression)
+    expression = _re.sub(r'\blet\s+', 'var ', expression)
+
+    # Unwrap console.log() — Runtime.evaluate returns the expression
+    # value directly, but console.log() returns undefined. If the
+    # entire expression is console.log(...), unwrap it.
+    stripped = expression.strip().rstrip(";")
+    if stripped.startswith("console.log(") and stripped.endswith(")"):
+        inner = stripped[len("console.log("):-1]
+        # Only unwrap if parens are balanced (simple check)
+        depth = 0
+        balanced = True
+        for ch in inner:
+            if ch == "(": depth += 1
+            elif ch == ")": depth -= 1
+            if depth < 0:
+                balanced = False
+                break
+        if balanced and depth == 0:
+            expression = inner
+
     try:
         resp = _evaluate(expression, timeout=timeout, await_promise=await_promise)
     except RuntimeError as e:

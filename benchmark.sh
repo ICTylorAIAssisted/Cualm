@@ -11,6 +11,7 @@
 #   ./benchmark.sh --coverage-test                     # verify coverage tracking works
 #   ./benchmark.sh --trace benchmark/results/0/        # generate trace viewer for task 0
 #   ./benchmark.sh --trace benchmark/results/ --all     # generate viewers for all tasks
+#   ./benchmark.sh --re-evaluate benchmark/results/     # re-score with current evaluator
 #   ./benchmark.sh down          # stop sites + remove leftover containers
 #   ./benchmark.sh --cleanup     # remove leftover containers only
 #
@@ -38,6 +39,16 @@ if [ "${1:-}" = "down" ]; then
     echo "Cleaning up benchmark containers..."
     python3 benchmark/run.py --cleanup
     exit 0
+fi
+
+# ── "--re-evaluate" mode: re-score results with current evaluator ──
+if [ "${1:-}" = "--re-evaluate" ]; then
+    shift
+    if [ $# -eq 0 ]; then
+        echo "Usage: ./benchmark.sh --re-evaluate <results_dir>"
+        exit 1
+    fi
+    exec python3 benchmark/re_evaluate.py "$@"
 fi
 
 # ── "--trace" mode: generate trace viewer HTML ────────────────

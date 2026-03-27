@@ -50,7 +50,7 @@ def find_session_dir(path: Path) -> Path | None:
 
 
 def load_session(session_dir: Path) -> dict:
-    """Load trace + metadata from a session directory."""
+    """Load trace + metadata + task info from a session directory."""
     trace_path = session_dir / "trace.json"
     meta_path = session_dir / "metadata.json"
 
@@ -64,6 +64,18 @@ def load_session(session_dir: Path) -> dict:
         with open(meta_path) as f:
             meta = json.load(f)
 
+    # Load task_info.json from parent dirs (task dir has audit/session_*)
+    task_info = {}
+    for parent in [session_dir.parent, session_dir.parent.parent]:
+        ti_path = parent / "task_info.json"
+        if ti_path.exists():
+            try:
+                with open(ti_path) as f:
+                    task_info = json.load(f)
+                break
+            except (json.JSONDecodeError, OSError):
+                pass
+
     # Load screenshots as base64
     for step in trace:
         png_name = step.get("screenshot", "")
@@ -73,7 +85,8 @@ def load_session(session_dir: Path) -> dict:
                 with open(png_path, "rb") as f:
                     step["_screenshot_b64"] = base64.b64encode(f.read()).decode()
 
-    return {"trace": trace, "metadata": meta, "session_dir": str(session_dir)}
+    return {"trace": trace, "metadata": meta, "task_info": task_info,
+            "session_dir": str(session_dir)}
 
 
 def extract_think(reply: str) -> tuple:
@@ -102,12 +115,66 @@ def generate_html(session: dict) -> str:
     """Generate a self-contained HTML trace viewer."""
     trace = session["trace"]
     meta = session["metadata"]
+    task_info = session.get("task_info", {})
 
     task = meta.get("task", "Unknown task")
     model = meta.get("model", "Unknown model")
     outcome = meta.get("outcome", "unknown")
     total_steps = meta.get("steps", len(trace))
     wall_time = meta.get("wall_time_sec", 0)
+
+    # Build evaluation info panel
+    eval_html = ""
+    if task_info:
+        ref = task_info.get("reference_answers", {})
+        agent_result = task_info.get("agent_result", "")
+        passed = task_info.get("passed", False)
+        eval_types = task_info.get("eval_types", [])
+        pass_class = "eval-pass" if passed else "eval-fail"
+        pass_text = "PASS" if passed else "FAIL"
+
+        ref_parts = []
+        must_include = ref.get("must_include", [])
+        if must_include:
+            mi_strs = []
+            for item in must_include:
+                if isinstance(item, str):
+                    mi_strs.append(html.escape(item))
+                elif isinstance(item, list):
+                    alts = [html.escape(str(a)) for a in item]
+                    mi_strs.append(" or ".join(alts))
+            ref_parts.append(f"<span class='label'>Must include:</span> "
+                           f"{' · '.join(mi_strs)}")
+        exact = ref.get("exact_match", "N/A")
+        if isinstance(exact, str) and exact != "N/A":
+            ref_parts.append(f"<span class='label'>Exact match:</span> "
+                           f"{html.escape(exact)}")
+        elif isinstance(exact, list):
+            alts = [html.escape(str(a)) for a in exact]
+            ref_parts.append(f"<span class='label'>Exact match (one of):</span> "
+                           f"{' or '.join(alts)}")
+        fuzzy = ref.get("fuzzy_match", [])
+        if fuzzy:
+            ref_parts.append(f"<span class='label'>Fuzzy match:</span> "
+                           f"{html.escape(', '.join(str(x) for x in fuzzy))}")
+
+        eval_html = f"""
+        <div class="eval-panel {pass_class}">
+          <div class="eval-header">
+            <span class="badge {'pass' if passed else 'fail'}">{pass_text}</span>
+            <span class="eval-type">{html.escape(', '.join(eval_types))}</span>
+          </div>
+          <div class="eval-body">
+            <div class="eval-row">
+              <span class="label">Expected:</span>
+              <span class="eval-value">{' · '.join(ref_parts) if ref_parts else '<em>no reference</em>'}</span>
+            </div>
+            <div class="eval-row">
+              <span class="label">Agent returned:</span>
+              <span class="eval-value agent-result">{html.escape(str(agent_result or '(none)'))}</span>
+            </div>
+          </div>
+        </div>"""
 
     steps_html = []
     total_prompt_tokens = 0
@@ -145,6 +212,41 @@ def generate_html(session: dict) -> str:
         total_completion_tokens += ct
         tok_s = f"{ct / elapsed:.1f}" if elapsed > 0 else "—"
 
+        # Entropy stats
+        entropy = usage.get("entropy", {})
+        mean_h = entropy.get("mean_entropy", 0)
+        max_h = entropy.get("max_entropy", 0)
+        high_h_count = entropy.get("high_entropy_count", 0)
+        low_conf = entropy.get("low_confidence_tokens", [])
+
+        # Color-code entropy: green (<0.5), yellow (0.5-1.5), red (>1.5)
+        if mean_h > 0:
+            if mean_h < 0.5:
+                h_class = "entropy-low"
+            elif mean_h < 1.5:
+                h_class = "entropy-mid"
+            else:
+                h_class = "entropy-high"
+            entropy_badge = (f'<span class="entropy-badge {h_class}" '
+                           f'title="mean={mean_h:.2f} max={max_h:.2f} '
+                           f'high={high_h_count}">'
+                           f'H={mean_h:.2f}</span>')
+        else:
+            entropy_badge = ""
+
+        # Low-confidence tokens section
+        low_conf_html = ""
+        if low_conf:
+            lc_items = " ".join(
+                f'<span class="lc-token" title="entropy={t["entropy"]}, '
+                f'p1={t["top1_prob"]}">{html.escape(t["token"])}'
+                f'<sub>{t["entropy"]:.1f}</sub></span>'
+                for t in low_conf
+            )
+            low_conf_html = (f'<details class="section">'
+                           f'<summary>Uncertain tokens ({len(low_conf)})</summary>'
+                           f'<div class="lc-tokens">{lc_items}</div></details>')
+
         # Extract a11y tree from prompt (between "Accessibility tree:" and next section)
         a11y = ""
         if "Accessibility tree:" in prompt_text:
@@ -180,6 +282,7 @@ def generate_html(session: dict) -> str:
             <span class="badge step-num">Step {step_num}</span>
             <span class="step-title">{html.escape(command[:80]) if command else '(no command)'}</span>
             <span class="tokens">{pt:,}→{ct:,} ({tok_s} tok/s)</span>
+            {entropy_badge}
             <span class="chevron">▾</span>
           </div>
           <div class="step-body">
@@ -194,6 +297,7 @@ def generate_html(session: dict) -> str:
                   <pre class="command">{html.escape(command)}</pre>
                 </div>
                 {'<details class="section"><summary>Output</summary><pre class="output">' + html.escape(output) + '</pre></details>' if output else ''}
+                {low_conf_html}
                 {'<details class="section"><summary>Plan</summary><pre class="plan">' + html.escape(plan) + '</pre></details>' if plan else ''}
                 {'<details class="section"><summary>Accessibility Tree</summary><pre class="a11y">' + html.escape(a11y) + '</pre></details>' if a11y else ''}
               </div>
@@ -387,6 +491,57 @@ body {{
   flex-shrink: 0;
 }}
 
+.entropy-badge {{
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}}
+
+.entropy-low {{
+  background: #052e16;
+  color: var(--green);
+  border: 1px solid #166534;
+}}
+
+.entropy-mid {{
+  background: #1c1a05;
+  color: var(--orange);
+  border: 1px solid #854d0e;
+}}
+
+.entropy-high {{
+  background: #2c0b0e;
+  color: var(--red);
+  border: 1px solid #7f1d1d;
+}}
+
+.lc-tokens {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0;
+}}
+
+.lc-token {{
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #1e0505;
+  color: var(--red);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #7f1d1d;
+  cursor: help;
+}}
+
+.lc-token sub {{
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-left: 2px;
+}}
+
 .step-body {{
   padding: 0 16px 16px;
 }}
@@ -513,6 +668,61 @@ pre.a11y {{
   border-radius: 3px;
 }}
 
+.eval-panel {{
+  margin: 0 32px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}}
+
+.eval-panel.eval-pass {{
+  border-color: #166534;
+  background: #051e10;
+}}
+
+.eval-panel.eval-fail {{
+  border-color: #7f1d1d;
+  background: #1e0505;
+}}
+
+.eval-header {{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}}
+
+.eval-type {{
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+}}
+
+.eval-body {{
+  font-size: 13px;
+}}
+
+.eval-row {{
+  padding: 3px 0;
+}}
+
+.eval-row .label {{
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-right: 6px;
+}}
+
+.eval-value {{
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}}
+
+.eval-value.agent-result {{
+  color: var(--accent);
+}}
+
 .keyboard-hint {{
   text-align: center;
   padding: 12px;
@@ -543,6 +753,8 @@ kbd {{
     <span>Tokens <span class="val">{total_prompt_tokens + total_completion_tokens:,} ({total_prompt_tokens:,} in / {total_completion_tokens:,} out)</span></span>
   </div>
 </div>
+
+{eval_html}
 
 <div class="nav">
   {''.join(f'<a href="#step-{s.get("step", i+1)}">{s.get("step", i+1)}</a>' for i, s in enumerate(trace) if s.get("step"))}

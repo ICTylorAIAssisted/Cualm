@@ -46,24 +46,59 @@ def evaluate_task(task_config: dict, agent_result: dict) -> bool:
     return False
 
 
+def _normalize(text: str) -> str:
+    """Normalize text for comparison: lowercase, strip special chars."""
+    import unicodedata
+    # Replace common special chars
+    text = text.replace("™", "").replace("®", "").replace("©", "")
+    # Normalize unicode (e.g. fancy quotes → ascii)
+    text = unicodedata.normalize("NFKD", text)
+    # Collapse whitespace
+    text = " ".join(text.split())
+    return text.lower().strip()
+
+
 def check_string_match(agent_answer: str, reference: dict) -> bool:
-    """Check if the agent's answer matches reference criteria."""
+    """Check if the agent's answer matches reference criteria.
+
+    WebArena reference_answers format:
+      must_include: list of items, where each item is either:
+        - a string: answer must contain it
+        - a list of strings: answer must contain at least one (alternatives)
+      exact_match: "N/A", a string, or a list of alternative strings
+    """
     if agent_answer is None:
         agent_answer = ""
-    answer = agent_answer.lower().strip()
+    answer = _normalize(agent_answer)
 
     must_include = reference.get("must_include", [])
     for item in must_include:
-        if isinstance(item, str) and item.lower() not in answer:
-            return False
+        if isinstance(item, str):
+            # Single required string
+            if _normalize(item) not in answer:
+                return False
+        elif isinstance(item, list):
+            # List of alternatives — at least one must be present
+            if not any(_normalize(alt) in answer
+                      for alt in item if isinstance(alt, str)):
+                return False
 
     exact = reference.get("exact_match", "N/A")
     if isinstance(exact, str) and exact != "N/A":
-        if answer != exact.lower().strip():
+        if answer != _normalize(exact):
+            return False
+    elif isinstance(exact, list):
+        # List of acceptable exact answers
+        if not any(answer == _normalize(alt)
+                  for alt in exact if isinstance(alt, str)):
             return False
 
-    if not must_include and (not isinstance(exact, str) or exact == "N/A"):
-        return False
+    # If no criteria were specified, fail (nothing to match against)
+    if not must_include:
+        if isinstance(exact, str) and exact == "N/A":
+            return False
+        if not isinstance(exact, (str, list)):
+            return False
 
     return True
 

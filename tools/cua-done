@@ -35,7 +35,11 @@ PLAN_FILE = "/tmp/cua_plan.json"
 
 
 def _check_plan() -> tuple[bool, str]:
-    """Check if all plan steps are done. Returns (ok, message)."""
+    """Check if all plan steps are done. Returns (ok, message).
+
+    When blocking, provides a ready-to-run recovery command so the
+    model can update the plan and complete in a single step.
+    """
     try:
         with open(PLAN_FILE) as f:
             plan = json.load(f)
@@ -60,7 +64,21 @@ def _check_plan() -> tuple[bool, str]:
         lines.append(f"  {icon} {i}. {s['text']}")
     lines.append(f"  ({len(done)} done, {len(pending)} pending, {len(failed)} failed)")
     lines.append("")
-    lines.append("Complete remaining steps first, or use --force to override.")
+    lines.append("If the pending steps are actually complete, update the plan")
+    lines.append("and call cua-done together in one command:")
+
+    # Build the suggested plan string with all pending→DONE
+    plan_parts = []
+    for s in steps:
+        if s["status"] == "done" or s["status"] == "pending":
+            plan_parts.append("[DONE] " + s["text"])
+        elif s["status"] == "failed":
+            plan_parts.append("[FAIL] " + s["text"])
+        else:
+            plan_parts.append(s["text"])
+    suggested_plan = " | ".join(plan_parts)
+    lines.append(f'  run: cua-plan "{suggested_plan}" && cua-done "SUMMARY" --result "VALUE"')
+    return False, "\n".join(lines)
     return False, "\n".join(lines)
 
 

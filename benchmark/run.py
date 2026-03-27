@@ -894,6 +894,26 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # ── Save to progress file (crash-safe) ──
         append_progress(args.output_dir, result)
 
+        # ── Save task info for trace viewer ──
+        try:
+            task_dir = Path(args.output_dir) / str(task_id)
+            task_dir.mkdir(parents=True, exist_ok=True)
+            task_info = {
+                "task_id": task_id,
+                "intent": raw_task.get("intent", ""),
+                "sites": raw_task.get("sites", []),
+                "reference_answers": raw_task.get("eval", {}).get(
+                    "reference_answers", {}),
+                "eval_types": raw_task.get("eval", {}).get("eval_types", []),
+                "agent_result": result.get("result"),
+                "agent_outcome": result.get("outcome"),
+                "passed": result.get("passed", False),
+            }
+            (task_dir / "task_info.json").write_text(
+                json.dumps(task_info, indent=2))
+        except Exception:
+            pass
+
         # ── Report ──
         with print_lock:
             completed_count[0] += 1
