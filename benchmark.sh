@@ -287,6 +287,7 @@ except Exception as e:
         --entrypoint bash \
         -v "$ARGS_FILE:/tmp/coverage_args:ro,z" \
         -v "${CAL_VOLUME}:/var/cua/calibration:z" \
+        ${CUA_AUDIT_DIR:+-v "${CUA_AUDIT_DIR}:/app/audit:z"} \
         --add-host "host.docker.internal:${GATEWAY_IP}" \
         -e OPENAI_BASE_URL="$LLM_BASE_VIA_GATEWAY" \
         -e OPENAI_API_KEY="${OPENAI_API_KEY:-}" \

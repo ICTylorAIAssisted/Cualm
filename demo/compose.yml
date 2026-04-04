@@ -1,0 +1,71 @@
+services:
+  # ── Demo runner ──
+  # Has asciinema, ffmpeg, Playwright, Python — orchestrates recordings.
+  # Mounts Docker/Podman socket so it can launch agent containers.
+  demo-runner:
+    build:
+      context: ${PROJECT_ROOT:-..}
+      dockerfile: demo/Dockerfile
+    volumes:
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:z
+      - ${PROJECT_ROOT:-..}:/project:ro,z
+      - ${DEMO_OUTPUT}:/output:z
+      - benchmark-results:/project/benchmark/results
+    # Podman needs label=disable to access the mounted socket
+    security_opt:
+      - label=disable
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    working_dir: /project
+    environment:
+      - CUA_MODEL=${CUA_MODEL:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL_CONTAINER:-http://host.docker.internal:8000/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
+      - XMPP_HTTP_HOST=${XMPP_HTTP_HOST:-}
+      - DEMO_TASK=${DEMO_TASK:-0}
+      - DEMO_COVERAGE_MINUTES=${DEMO_COVERAGE_MINUTES:-5}
+      - VNC_PORT=${VNC_PORT:-5900}
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      # Forward agent tuning vars
+      - CUA_MAX_STEPS=${CUA_MAX_STEPS:-}
+      - CUA_AGENT_TIMEOUT=${CUA_AGENT_TIMEOUT:-}
+      - CUA_TEMPERATURE=${CUA_TEMPERATURE:-}
+      - CUA_TOP_P=${CUA_TOP_P:-}
+      - CUA_PRESENCE_PENALTY=${CUA_PRESENCE_PENALTY:-}
+      - CUA_LLM_EXTRA_PARAMS=${CUA_LLM_EXTRA_PARAMS:-}
+      - CUA_HISTORY_PAIRS=${CUA_HISTORY_PAIRS:-}
+      - CUA_SHOW_REFS=${CUA_SHOW_REFS:-}
+      - COVERAGE_URL=${COVERAGE_URL:-http://host.docker.internal:9500}
+      # XMPP demo vars
+      - XMPP_USER_JID=${XMPP_USER_JID:-}
+      - XMPP_USER_PASS=${XMPP_USER_PASS:-}
+      - XMPP_AGENT_JID=${XMPP_AGENT_JID:-}
+      - XMPP_PORT=${XMPP_PORT:-5222}
+    entrypoint: ["bash", "/project/demo/entrypoint.sh"]
+
+  # ── XMPP client (Wikipedia demo only) ──
+  xmpp-client:
+    build:
+      context: ${PROJECT_ROOT:-..}
+      dockerfile: demo/Dockerfile
+    volumes:
+      - ${PROJECT_ROOT:-..}:/project:ro,z
+      - ${DEMO_OUTPUT}:/output:z
+    security_opt:
+      - label=disable
+    working_dir: /project
+    environment:
+      - XMPP_USER_JID=${XMPP_USER_JID:-demo_user@localhost}
+      - XMPP_USER_PASS=${XMPP_USER_PASS:-demo_pass}
+      - XMPP_AGENT_JID=${XMPP_AGENT_JID:-agent@localhost}
+    profiles: ["wikipedia"]
+    entrypoint: ["python3", "demo/xmpp_client.py"]
+    command:
+      - "--jid=${XMPP_USER_JID:-demo_user@localhost}"
+      - "--password=${XMPP_USER_PASS:-demo_pass}"
+      - "--to=${XMPP_AGENT_JID:-agent@localhost}"
+      - "--message=Open wikipedia.org, click on the English Wikipedia link, and give me the link of today's featured article"
+      - "--wait=180"
+
+volumes:
+  benchmark-results:
