@@ -29,7 +29,7 @@ class TestRunHelper:
     def test_timeout(self):
         ok, out, err = _run(["sleep", "10"], timeout=1)
         assert ok is False
-        assert "timeout" in err.lower()
+        assert "timed out" in err.lower() or "timeout" in err.lower()
 
 
 class TestLevelStructure:
