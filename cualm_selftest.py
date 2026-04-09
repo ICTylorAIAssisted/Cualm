@@ -64,7 +64,10 @@ def test_runtime_responds():
     if not rt:
         return False, "No runtime found"
     t0 = time.monotonic()
-    ok, out, _ = _run([rt, "info", "--format", "{{.Host.OSType}}"])
+    ok, out, _ = _run([rt, "version", "--format", "json"])
+    if not ok:
+        # Fallback for podman compat
+        ok, out, _ = _run([rt, "version"])
     elapsed = time.monotonic() - t0
     return ok, f"{rt} responds", elapsed
 
@@ -167,6 +170,17 @@ def test_llm_completion():
     t0 = time.monotonic()
     try:
         import urllib.request
+
+        # Discover model if not set
+        if not model:
+            resp = urllib.request.urlopen(f"{url}/models", timeout=5)
+            data = json.loads(resp.read())
+            models = data.get("data", [])
+            if models:
+                model = models[0]["id"]
+            else:
+                return False, "No models available", time.monotonic() - t0
+
         body = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": "Reply with just the word 'hello'"}],
@@ -182,7 +196,7 @@ def test_llm_completion():
         elapsed = time.monotonic() - t0
         text = data["choices"][0]["message"]["content"].strip()
         tokens = data.get("usage", {}).get("completion_tokens", "?")
-        return True, f'"{text[:50]}" ({tokens} tokens)', elapsed
+        return True, f'model={model}, "{text[:50]}" ({tokens} tok)', elapsed
     except Exception as e:
         elapsed = time.monotonic() - t0
         return False, str(e)[:100], elapsed
@@ -192,7 +206,6 @@ def test_llm_completion():
 
 def test_end_to_end():
     """Agent navigates to example.com with a mock LLM."""
-    # Start mock LLM
     scripts_dir = Path(__file__).parent / "tests" / "scripts"
     if not scripts_dir.exists():
         scripts_dir = Path("tests/scripts")
@@ -210,10 +223,10 @@ def test_end_to_end():
 
     t0 = time.monotonic()
 
-    with MockLLMServer(script=CALIBRATION_ONLY, port=0) as server:
-        # Run agent with mock LLM
-        # Rewrite localhost URL for container access
-        llm_url = server.url.replace("127.0.0.1", "host.docker.internal")
+    # Listen on 0.0.0.0 so containers can reach us (rootless podman)
+    with MockLLMServer(script=CALIBRATION_ONLY, host="0.0.0.0", port=0) as server:
+        port = server.url.split(":")[-1].split("/")[0]
+        llm_url = f"http://host.docker.internal:{port}/v1"
 
         name = "cualm-selftest-e2e"
         _run([rt, "rm", "-f", name])
@@ -236,7 +249,11 @@ def test_end_to_end():
         calls = server.call_count
         if calls > 0:
             return True, f"Agent made {calls} LLM calls in {elapsed:.0f}s", elapsed
-        return False, f"No LLM calls received. Agent output: {(out or err)[:200]}", elapsed
+
+        hint = f"stdout: {(out or '')[:150]}"
+        if "Connection refused" in (err or "") or "Connection refused" in (out or ""):
+            hint = f"Mock LLM not reachable from container (port {port})"
+        return False, hint, elapsed
 
 
 # ── Runner ──

@@ -145,11 +145,13 @@ class MockLLMServer:
     def __init__(
         self,
         script: list[dict] | None = None,
+        host: str = "127.0.0.1",
         port: int = 0,
         default_response: str = 'run: cua-done "stuck" --result "N/A"',
         verbose: bool = False,
     ):
         self.script = script or []
+        self.host = host
         self.port = port
         self.default_response = default_response
         self.verbose = verbose
@@ -164,7 +166,7 @@ class MockLLMServer:
 
     def start(self):
         """Start server in background thread."""
-        self._httpd = HTTPServer(("127.0.0.1", self.port), MockLLMHandler)
+        self._httpd = HTTPServer((self.host, self.port), MockLLMHandler)
         self._httpd.script = self.script
         self._httpd.default_response = self.default_response
         self._httpd.verbose = self.verbose
