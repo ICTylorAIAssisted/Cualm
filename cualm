@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""cualm — Computer Use Agent (Lightweight, Model-agnostic)
+
+Single entry point for all agent operations. Auto-detects environment
+and guides setup when dependencies are missing.
+
+Usage:
+  cualm agent "your task"          Run a one-shot task
+  cualm serve                      Start XMPP + orchestrator (phone access)
+  cualm benchmark [OPTS]           Run WebArena benchmark
+  cualm coverage [OPTS]            Run coverage benchmark
+  cualm demo {webarena|coverage|wikipedia|all}  Record demos
+  cualm status                     Check what's running
+  cualm selftest [--full]          Run sanity checks
+  cualm down                       Stop everything
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# Ensure we're in the project root
+SCRIPT_DIR = Path(__file__).parent.resolve()
+os.chdir(SCRIPT_DIR)
+
+# ── Colors ──
+GREEN = "\033[32m"
+RED = "\033[31m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+
+def load_env():
+    """Load .env file if present."""
+    env_path = SCRIPT_DIR / ".env"
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+
+
+def ensure_ready(require_llm=True, require_image=True):
+    """Run preflight checks; exit if blocking issues found.
+
+    On first run (no agent image), offers to build automatically.
+    """
+    from cualm_preflight import detect_system, run_checks, print_checks
+
+    info = detect_system()
+    results = run_checks(info)
+
+    # Relax non-essential checks
+    if not require_llm:
+        for r in results:
+            if r.name == "LLM server":
+                r.blocking = False
+    if not require_image:
+        for r in results:
+            if r.name == "Agent image":
+                r.blocking = False
+
+    # Check for blocking issues
+    blocking = [r for r in results if not r.ok and r.blocking]
+
+    if not blocking:
+        return True  # All good, silent
+
+    # Print issues
+    print(f"\n{BOLD}Checking environment...{RESET}\n")
+    print_checks(results)
+
+    # Auto-build image if that's the only issue
+    image_missing = any(r.name == "Agent image" and not r.ok for r in blocking)
+    other_issues = any(r.name != "Agent image" for r in blocking)
+
+    if image_missing and not other_issues:
+        print(f"  Building agent image (first-time setup)...\n")
+        rc = subprocess.call(["./run.sh", "build"])
+        if rc == 0:
+            print(f"\n  {GREEN}Build complete.{RESET}\n")
+            return True
+        else:
+            print(f"\n  {RED}Build failed (exit {rc}).{RESET}")
+            sys.exit(1)
+
+    print(f"\n  {RED}Fix the issues above, then re-run.{RESET}\n")
+    sys.exit(1)
+
+
+# ── Commands ──
+
+def cmd_agent(args):
+    """Run a one-shot agent task."""
+    ensure_ready()
+    task = " ".join(args.task)
+    os.execvp("./run.sh", ["./run.sh", "agent", task])
+
+
+def cmd_serve(args):
+    """Start XMPP + orchestrator for phone access."""
+    ensure_ready()
+    os.execvp("./run.sh", ["./run.sh", "up"])
+
+
+def cmd_benchmark(args):
+    """Run WebArena benchmark."""
+    ensure_ready()
+    cmd = ["./benchmark.sh"] + args.extra
+    os.execvp(cmd[0], cmd)
+
+
+def cmd_coverage(args):
+    """Run coverage benchmark."""
+    ensure_ready()
+    cmd = ["./benchmark.sh", "--coverage"] + args.extra
+    os.execvp(cmd[0], cmd)
+
+
+def cmd_demo(args):
+    """Record demos."""
+    ensure_ready(require_llm=True)
+    cmd = ["./demo.sh", args.mode] + args.extra
+    os.execvp(cmd[0], cmd)
+
+
+def cmd_down(args):
+    """Stop all services."""
+    # run.sh down
+    subprocess.call(["./run.sh", "down"])
+    # Also stop WebArena sites if running
+    webarena = "compose.d/.webarena/compose.yml"
+    if os.path.exists(webarena):
+        subprocess.call(["docker", "compose", "-f", webarena, "down"],
+                        stderr=subprocess.DEVNULL)
+
+
+def cmd_status(args):
+    """Show running containers and services."""
+    rt = "podman" if os.path.exists("/usr/bin/podman") else "docker"
+
+    print(f"\n{BOLD}cualm status{RESET}\n")
+
+    # Running containers
+    rc = subprocess.call([
+        rt, "ps", "--format",
+        "table {{.Names}}\t{{.Status}}\t{{.Ports}}",
+        "--filter", "label=com.docker.compose.project",
+    ])
+
+    # Also show cualm-related containers
+    print()
+    subprocess.call([
+        rt, "ps", "--format",
+        "table {{.Names}}\t{{.Status}}\t{{.Image}}",
+        "--filter", "name=cua",
+        "--filter", "name=task-",
+        "--filter", "name=bench-",
+        "--filter", "name=coverage-",
+        "--filter", "name=webarena-",
+    ])
+    print()
+
+
+def cmd_selftest(args):
+    """Run sanity checks."""
+    from cualm_selftest import run_selftest
+    max_level = 4 if args.full else (args.level or 3)
+    ok = run_selftest(max_level)
+    sys.exit(0 if ok else 1)
+
+
+def cmd_setup(args):
+    """Explicit setup / environment check."""
+    from cualm_preflight import preflight
+    ok = preflight(require_llm=True, require_image=True)
+    if ok and not args.skip_test:
+        print(f"{BOLD}Running sanity checks...{RESET}")
+        from cualm_selftest import run_selftest
+        run_selftest(max_level=2)
+    sys.exit(0 if ok else 1)
+
+
+# ── Main ──
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="cualm",
+        description="Computer Use Agent — Lightweight, Model-agnostic",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+examples:
+  cualm agent "Search for AI on Wikipedia"
+  cualm serve                              # phone access via XMPP
+  cualm benchmark --tasks 0-10
+  cualm demo webarena
+  cualm selftest --full
+""",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # agent
+    p = sub.add_parser("agent", help="Run a one-shot task")
+    p.add_argument("task", nargs="+", help="Task description")
+    p.set_defaults(func=cmd_agent)
+
+    # serve
+    p = sub.add_parser("serve", help="Start XMPP + orchestrator")
+    p.set_defaults(func=cmd_serve)
+
+    # benchmark
+    p = sub.add_parser("benchmark", help="Run WebArena benchmark")
+    p.add_argument("extra", nargs="*", help="Extra args for benchmark.sh")
+    p.set_defaults(func=cmd_benchmark)
+
+    # coverage
+    p = sub.add_parser("coverage", help="Run coverage benchmark")
+    p.add_argument("extra", nargs="*", help="Extra args")
+    p.set_defaults(func=cmd_coverage)
+
+    # demo
+    p = sub.add_parser("demo", help="Record demos")
+    p.add_argument("mode", choices=["webarena", "coverage", "wikipedia", "all"])
+    p.add_argument("extra", nargs="*")
+    p.set_defaults(func=cmd_demo)
+
+    # status
+    p = sub.add_parser("status", help="Show running services")
+    p.set_defaults(func=cmd_status)
+
+    # down
+    p = sub.add_parser("down", help="Stop everything")
+    p.set_defaults(func=cmd_down)
+
+    # selftest
+    p = sub.add_parser("selftest", help="Run sanity checks")
+    p.add_argument("--full", action="store_true", help="Include end-to-end test")
+    p.add_argument("--level", type=int, help="Specific level (1-4)")
+    p.set_defaults(func=cmd_selftest)
+
+    # setup
+    p = sub.add_parser("setup", help="Check/fix environment")
+    p.add_argument("--skip-test", action="store_true",
+                    help="Skip sanity tests after setup")
+    p.set_defaults(func=cmd_setup)
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    # Load .env
+    load_env()
+
+    # Run command
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
