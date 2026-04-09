@@ -1,0 +1,10 @@
+{"version": 2, "width": 191, "height": 47, "timestamp": 1775767351, "env": {"SHELL": null, "TERM": "xterm"}}
+[2.463648, "o", "  Gateway: 10.89.7.7 (ports: 4399, 7770, 7780, 8023, 9999 + LLM:8000)\r\nLoaded 1 tasks\r\n  Mode        : agent\r\n  Agent image : cua-agent\r\n  Model       : extra.Qwen_Qwen3.5-35B-A3B-GGUF\r\n  Max steps   : 40\r\n  Timeout     : 600s\r\n  HAR capture : False\r\n  Evaluation  : legacy\r\n  Network     : webarena-net\r\n  VNC port    : 5900\r\n\r\n"]
+[2.464554, "o", "[1/1] Task 0: What is the top-1 best-selling product in 2022\r\n"]
+[2.541281, "o", "    VNC: localhost:5900\r\n"]
+[239.473894, "o", "/project/benchmark/run.py:245: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.\r\n  tar.extractall(path=str(dest))\r\n"]
+[239.474943, "o", "    Audit: benchmark/results/0/audit\r\n"]
+[239.499807, "o", "[1/1] Task 0 → PASS (10 steps, 236.8s, completed)  [1/1]\r\n  → Result: Quest Lumaflex™ Band\r\n"]
+[239.504176, "o", "\r\n============================================================\r\nResults: 100.0% (1/1)\r\n  Passed : 1\r\n"]
+[239.504192, "o", "  Failed : 0\r\n  Errored: 0\r\n\r\nBy site:\r\n"]
+[239.504236, "o", "  shopping_admin         1/  1 (100%)\r\n\r\nFull report: benchmark/results/report_1775767591.json\r\n\r\nCleaning up benchmark containers...\r\n"]

@@ -1,0 +1,273 @@
+╔══════════════════════════════════════╗
+║     Coverage Benchmark Mode          ║
+╚══════════════════════════════════════╝
+  LLM gateway: port 8000 → host
+Starting coverage target + gateway...
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[4m>>>> Executing external compose provider "/usr/bin/podman-compose". Please see podman-compose(1) for how to disable this message. <<<<
+
+[0m8c3c2943d041f872424d83904237b1a7271855739cf6b9cee6033f9fd94df32f
+789972064d48d294233320b29c4166023e5e444f8e1322323e5a3fd569fe175e
+052912d5dc3c7b9b731dc4b5272892c47ab55124d27926498243f82125ff09c5
+coverage-target
+coverage-gateway
+  Container status:
+  coverage-target: Up 1 second
+  coverage-gateway: Up Less than a second
+  Waiting for coverage target... ready
+  Resolving gateway IP...
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+  Networks found: coverage-ext, coverage-net
+    coverage-ext: IPAddress=10.89.8.2
+    coverage-net: IPAddress=10.89.7.3
+  Gateway IP: 10.89.7.3
+
+Launching agent → http://coverage-target/
+
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+Xlib:  extension "DPMS" missing on display ":99".
+
+The VNC desktop is:      234fd5315655:0
+PORT=5900
+VNC available on port 5900
+╔══════════════════════════════════════╗
+║     Coverage Benchmark               ║
+╚══════════════════════════════════════╝
+  URL:        http://coverage-target/
+  Max steps:  50
+  Timeout:    300s
+
+
+Launching agent with task:
+  You are testing a web application at: http://coverage-target/
+Your goal is to maximize code coverage...
+
+Ready. Run: /app/agent.py 'your task'
+🔌 Plugins: audit, usage_tracking, xmpp
+📁 Audit: /app/audit/session_20260409_204800
+   XMPP: no XMPP_JID set — daemon not started
+🤖 Task: You are testing a web application at: http://coverage-target/
+Your goal is to maximize code coverage by exploring every feature,
+clicking every button, filling every form, opening every menu,
+and navigating every page.
+
+Coverage snapshots are taken automatically every few steps and shown
+in your context. Use "cua-cdp-coverage report" to find which files
+still have low coverage and target those areas.
+
+Strategy:
+1. Start by surveying the page — read the a11y tree and explore the UI.
+2. Systematically explore: navigation menus, links, buttons, forms,
+   dropdowns, tabs, modals, accordions, search, filters.
+3. Try to trigger error states, edge cases, empty states too.
+4. Fill forms with realistic data and submit them.
+5. Test interactive features: sorting, pagination, drag-and-drop,
+   date pickers, file uploads, etc.
+6. When coverage stops increasing, run: cua-cdp-coverage report
+   to find the least-covered files, then target those areas.
+
+When you believe you've maximized coverage or exhausted all reachable
+features, use: cua-done "Coverage testing complete" --result "<final_%>"
+
+   LLM sampling: temp=0.7, top_p=0.95, presence_penalty=1.5
+   Calibration file: /var/cua/calibration/extra.Qwen_Qwen3.5-35B-A3B-GGUF.json
+
+── Calibration (cached) ──
+   scale=(1.2877, 0.7200)
+   📊 Coverage recording started
+
+── Step 1 ──
+   A11y tree: 165 lines (43ms)
+   [debug] Message fields: ['annotations', 'audio', 'construct', 'content', 'copy', 'dict', 'from_orm', 'function_call', 'json', 'model_computed_fields', 'model_config', 'model_construct', 'model_copy', 'model_dump', 'model_dump_json', 'model_extra', 'model_fields', 'model_fields_set', 'model_json_schema', 'model_parametrized_name', 'model_post_init', 'model_rebuild', 'model_validate', 'model_validate_json', 'model_validate_strings', 'parse_file', 'parse_obj', 'parse_raw', 'refusal', 'role', 'schema', 'schema_json', 'to_dict', 'to_json', 'tool_calls', 'update_forward_refs', 'validate']
+   [debug] Extra fields: ['reasoning_content']
+   [debug] Reasoning captured: True
+   [debug] Logprobs available: True
+   Tokens: 6283→647 (35.2s, 18.4 tok/s) | Session: 6930 total, 18.4 avg tok/s
+   LLM → <think>
+Let me analyze this page and create a comprehensive plan for maximizing code coverage.
+
+Looking at the accessibility tree, I can see many interactive elements:
+
+1. **Theme toggle** (e1) - Swit…
+   Command: cua-plan "Survey all UI sections | Test Counter buttons (+1, -1, ×2, Reset) | Test Tasks feature (add task with priority) | Fill and submit Validated Form | Switch through all tabs (Overview, Details, Settings) | Use slider control | Test Search & Filter buttons | Build calculator expression and compute | Test Drag & Drop zone | Test Event Log Clear/Export | Run coverage report to identify gaps"
+   Output: Plan (v1):
+  ○ 1. Survey all UI sections
+  ○ 2. Test Counter buttons (+1, -1, ×2, Reset)
+  ○ 3. Test Tasks feature (add task with priority)
+  ○ 4. Fill and submit Validated Form
+  ○ 5. Switch through all tabs (Overview, Details, Settings)
+  ○ 6. Use slider control
+  ○ 7. Test Search & Filter buttons…
+
+── Step 2 ──
+   📊 JS:   21.8%  (4,155/19,045 bytes, 1 files)
+   A11y tree: 165 lines (39ms)
+   Tokens: 6865→396 (26.6s, 14.9 tok/s) | Session: 14191 total, 16.9 avg tok/s
+   LLM → <think>
+Let me analyze this page systematically. I can see many interactive elements that need to be tested:
+
+1. Theme toggle (e1) - Switches themes
+2. Reset button (e2) - Resets something
+3. Counter …
+   Command: cua-pw click e4 && sleep 0.2 && cua-pw click e4 && sleep 0.2 && cua-pw click e5
+   Output: Clicked: e4
+Clicked: e4
+Clicked: e5
+
+[exit:0; 1.49s]
+
+── Step 3 ──
+   📊 JS:   26.0%  (4,950/19,045 bytes, 1 files)
+   A11y tree: 166 lines (39ms)
+   Tokens: 6703→248 (21.3s, 11.6 tok/s) | Session: 21142 total, 15.5 avg tok/s
+   LLM → <think>
+Looking at the screenshot, I can see a comprehensive test page with many interactive elements. The current counter shows "4" (which was doubled from 2).
+
+Let me continue systematically testin…
+   Command: cua-pw fill e7 "Test task 1" && cua-pw select e8 "High" && cua-pw click e12
+   Output: Filled: e7 = "Test task 1"
+Selected: e8 → "High"
+Clicked: e12
+
+[exit:0; 1.16s]
+
+── Step 4 ──
+   📊 JS:   35.6%  (6,777/19,045 bytes, 1 files)
+   A11y tree: 173 lines (41ms)
+   Tokens: 6753→485 (30.0s, 16.2 tok/s) | Session: 28380 total, 15.7 avg tok/s
+   LLM → <think>
+Let me analyze the current state and update my plan:
+
+Looking at the screenshot, I can see that I've already added a task "Test task 1" (it shows in the Tasks section). The counter is at 4.
+
+I…
+   Command: cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks feature (add task with priority) | 4. Fill and submit Validated Form | 5. Switch through all tabs (Overview, Details, Settings) | 6. Use slider control | 7. Test Search & Filter buttons | 8. Build calculator expression and compute | 9. Test Drag & Drop zone | 10. Test Event Log Clear/Export | 11. Run coverage report to identify gaps"
+   Output: Plan (v2):
+  ✓ 1. Survey all UI sections
+  ✓ 2. Test Counter buttons (+1, -1, ×2, Reset)
+  ✓ 3. Test Tasks feature (add task with priority)
+  ○ 4. Fill and submit Validated Form
+  ○ 5. Switch through all tabs (Overview, Details, Settings)
+  ○ 6. Use slider control
+  ○ 7. Test Search & Filter buttons…
+
+── Step 5 ──
+   📊 JS:   35.6%  (6,777/19,045 bytes, 1 files)
+   A11y tree: 172 lines (40ms)
+   Tokens: 6966→1094 (53.1s, 20.6 tok/s) | Session: 36440 total, 17.3 avg tok/s
+   LLM → <think>
+Looking at the current state, I can see that I've explored some features but still have many to test. The coverage is at 35.6%, so there's a lot more to do.
+
+Current plan status:
+- ✓ Surveyed …
+   Command: cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks feature (add task with priority) | 4. Fill and submit Validated Form | 5. Switch through all tabs (Overview, Details, Settings) | 6. Use slider control | 7. Test Search & Filter buttons | 8. Build calculator expression and compute | 9. Test Drag & Drop zone | 10. Test Event Log Clear/Export | 11. Run coverage report to identify gaps" && cua-pw fill e15 "John Doe" && cua-pw fill e16 "john.doe@example.com" && cua-pw fill e17 "30" && cua-pw select e18 "Personal" && cua-pw check e23 && cua-pw click e24
+   Output: Plan (v3):
+  ✓ 1. Survey all UI sections
+  ✓ 2. Test Counter buttons (+1, -1, ×2, Reset)
+  ✓ 3. Test Tasks feature (add task with priority)
+  ○ 4. Fill and submit Validated Form
+  ○ 5. Switch through all tabs (Overview, Details, Settings)
+  ○ 6. Use slider control
+  ○ 7. Test Search & Filter buttons…
+
+── Step 6 ──
+   📊 JS:   40.1%  (7,633/19,045 bytes, 1 files)
+   A11y tree: 177 lines (42ms)
+   Tokens: 7117→368 (26.3s, 14.0 tok/s) | Session: 43925 total, 16.8 avg tok/s
+   LLM → <think>
+Looking at the current state, I can see:
+- The Validated Form has been filled out (Name: John Doe, Email: john.doe@example.com, Age: 30, Category: Personal)
+- The checkbox for "I agree to term…
+   Command: cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks feature (add task with priority) | ○ 4. Fill and submit Validated Form | ○ 5. Switch through all tabs (Overview, Details, Settings) | ○ 6. Use slider control | ○ 7. Test Search & Filter buttons | ○ 8. Build calculator expression and compute | ○ 9. Test Drag & Drop zone | ○ 10. Test Event Log Clear/Export | ○ 11. Run coverage report to identify gaps" && cua-pw click e24
+   Output: Plan (v4):
+  ✓ 1. Survey all UI sections
+  ✓ 2. Test Counter buttons (+1, -1, ×2, Reset)
+  ✓ 3. Test Tasks feature (add task with priority)
+  ○ 4. Fill and submit Validated Form
+  ○ 5. Switch through all tabs (Overview, Details, Settings)
+  ○ 6. Use slider control
+  ○ 7. Test Search & Filter buttons…
+
+── Step 7 ──
+   📊 JS:   40.1%  (7,633/19,045 bytes, 1 files)
+   A11y tree: 177 lines (43ms)
+   Tokens: 7070→394 (27.3s, 14.5 tok/s) | Session: 51389 total, 16.5 avg tok/s
+   LLM → <think>
+The form was successfully submitted as indicated by "Form submitted successfully!" message. The focus moved to the Event Log section showing "Form submitted!". I can see many more UI elements …
+   Command: cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks feature (add task with priority) | [DONE] 4. Fill and submit Validated Form | ○ 5. Switch through all tabs (Overview, Details, Settings) | ○ 6. Use slider control | ○ 7. Test Search & Filter buttons | ○ 8. Build calculator expression and compute | ○ 9. Test Drag & Drop zone | ○ 10. Test Event Log Clear/Export | ○ 11. Run coverage report to identify gaps" && cua-pw click e26
+   Output: Plan (v5):
+  ✓ 1. Survey all UI sections
+  ✓ 2. Test Counter buttons (+1, -1, ×2, Reset)
+  ✓ 3. Test Tasks feature (add task with priority)
+  ✓ 4. Fill and submit Validated Form
+  ○ 5. Switch through all tabs (Overview, Details, Settings)
+  ○ 6. Use slider control
+  ○ 7. Test Search & Filter buttons…
+
+── Step 8 ──
+   📊 JS:   42.2%  (8,029/19,045 bytes, 1 files)
+   A11y tree: 174 lines (45ms)
+   Tokens: 7016→327 (24.7s, 13.2 tok/s) | Session: 58732 total, 16.2 avg tok/s
+   LLM → <think>
+The page shows "Details panel. Select a color theme accent:" which confirms that clicking on the Details tab worked. Now I need to:
+1. Click the Settings tab (e27)
+2. Test the slider control (…
+   Command: cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks feature (add task with priority) | [DONE] 4. Fill and submit Validated Form | [DONE] 5a. Switch to Overview tab | [DONE] 5b. Switch to Details tab | ○ 5c. Switch to Settings tab | ○ 6. Use slider control | ○ 7. Test Search & Filter buttons | ○ 8. Build calculator expression and compute | ○ 9. Test Drag & Drop zone | ○ 10. Test Event Log Clear/Export | ○ 11. Run coverage report to identify gaps" && cua-pw click e27
+   Output: Plan (v6):
+  ✓ 1. Survey all UI sections
+  ✓ 2. Test Counter buttons (+1, -1, ×2, Reset)
+  ✓ 3. Test Tasks feature (add task with priority)
+  ✓ 4. Fill and submit Validated Form
+  ✓ 5. Switch to Overview tab
+  ✓ 6. Switch to Details tab
+  ○ 7. Switch to Settings tab
+  ○ 8. Use slider control
+  ○ 9. …
+
+── Step 9 ──
+   📊 JS:   42.2%  (8,029/19,045 bytes, 1 files)
+   A11y tree: 179 lines (47ms)
+   Tokens: 7132→298 (23.8s, 12.5 tok/s) | Session: 66162 total, 15.9 avg tok/s
+   LLM → <think>
+I'm on the Settings tab of the page. I can see there are checkboxes for "Enable notifications", "Enable sounds", and "Auto-save", plus a "Save Settings" button. I need to test these settings c…
+   Command: cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks feature (add task with priority) | [DONE] 4. Fill and submit Validated Form | [DONE] 5a. Switch to Overview tab | [DONE] 5b. Switch to Details tab | [DONE] 5c. Switch to Settings tab | ○ 7. Toggle Settings checkboxes and Save | ○ 8. Use slider control | ○ 9. Test Search & Filter buttons | ○ 10. Build calculator expression and compute | ○ 11. Test Drag & Drop zone | ○ 12. Test Event Log Clear/Export | ○ 13. Run coverage report to identify gaps" && cua-cdp-js "document.querySelector('input[type=checkbox]').checked = true" && document.querySelector('input[type=checkbox]').click()
+   Output: stderr: /bin/sh: 1: Syntax error: word unexpected (expecting ")")
+
+[exit:2; 0.00s]
+
+── Step 10 ──
+   📊 JS:   42.2%  (8,029/19,045 bytes, 1 files)
+   A11y tree: 179 lines (42ms)
+   Tokens: 6985→415 (27.9s, 14.9 tok/s) | Session: 73562 total, 15.8 avg tok/s
+
+⏰ Timeout (300s) reached
+
+============================================================
+FINAL COVERAGE REPORT
+============================================================
+Coverage recording stopped.
+
+Coverage Summary:
+  JS:   42.2%  (8,029/19,045 bytes, 1 files)
+  CSS:   0.0%  (0/0 bytes, 0 files)
+  Total: 42.2%  (8,029/19,045 bytes)
+
+Least covered files (top 15):
+   42.2% ████████░░░░░░░░░░░░ [JS] http://coverage-target/index.js
+
+
+────────────────────────────────────────
+  Steps:        10
+  Time:         325s (5.4 min)
+  JS Coverage:  0%
+  CSS Coverage: 0%
+────────────────────────────────────────
+
+Stopping coverage target + gateway...
+coverage-gateway
+coverage-target
+coverage-gateway
+coverage-target
+8c3c2943d041f872424d83904237b1a7271855739cf6b9cee6033f9fd94df32f
+coverage-ext
+coverage-net

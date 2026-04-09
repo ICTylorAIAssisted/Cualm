@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cualm — Demo Showcase</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --surface-2: #1a1a26;
+  --border: #2a2a3a;
+  --text: #e0e0ec;
+  --text-dim: #8888a0;
+  --accent: #6ee7b7;
+  --accent-2: #38bdf8;
+  --accent-3: #f472b6;
+  --user-color: #38bdf8;
+  --agent-color: #6ee7b7;
+  --system-color: #666680;
+  --font-body: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  line-height: 1.6;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+/* Header */
+header {
+  padding: 80px 0 60px;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+header h1 {
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 12px;
+}
+header p {
+  color: var(--text-dim);
+  font-size: 1.15rem;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* Nav */
+nav {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 0;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+nav a {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 8px 20px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  transition: all 0.2s;
+}
+nav a:hover, nav a.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(110, 231, 183, 0.05);
+}
+
+/* Sections */
+section {
+  padding: 60px 0;
+  border-bottom: 1px solid var(--border);
+}
+section:last-child { border-bottom: none; }
+h2 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+h2 .emoji { font-size: 1.5rem; margin-right: 8px; }
+.section-desc {
+  color: var(--text-dim);
+  margin-bottom: 32px;
+  font-size: 1.05rem;
+}
+h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 32px 0 12px;
+  font-family: var(--font-mono);
+}
+
+/* Result badge */
+.result-badge {
+  display: inline-block;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 20px;
+  margin: 16px 0 24px;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+.result-badge.pass { border-color: var(--accent); background: rgba(110,231,183,0.08); }
+.result-badge.info { border-color: var(--accent-2); background: rgba(56,189,248,0.08); }
+
+/* Video */
+.video-wrap {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #000;
+  margin: 16px 0;
+}
+.video-wrap video {
+  width: 100%;
+  display: block;
+}
+.video-label {
+  padding: 8px 16px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  background: var(--surface);
+}
+
+/* Screenshot gallery */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+.gallery img {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.gallery img:hover {
+  transform: scale(1.02);
+  border-color: var(--accent);
+}
+.gallery .caption {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 4px 0;
+}
+
+/* Chat */
+.chat {
+  background: var(--surface);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 20px;
+  max-height: 500px;
+  overflow-y: auto;
+  font-size: 0.9rem;
+}
+.chat-msg { margin-bottom: 12px; }
+.chat-msg .sender {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.chat-msg .sender.user { color: var(--user-color); }
+.chat-msg .sender.agent { color: var(--agent-color); }
+.chat-msg .sender.system { color: var(--system-color); font-weight: 400; font-style: italic; }
+.chat-msg .body {
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-msg.system .body {
+  border-left: none;
+  padding-left: 0;
+  color: var(--system-color);
+  font-style: italic;
+}
+
+/* Steps */
+.step-list {
+  background: var(--surface);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.step {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+.step:last-child { border-bottom: none; }
+.step .step-num {
+  color: var(--accent);
+  font-weight: 600;
+  margin-right: 12px;
+}
+.step .cmd { color: var(--text); }
+
+/* Lightbox */
+.lightbox {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0,0,0,0.92);
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+.lightbox.active { display: flex; }
+.lightbox img {
+  max-width: 95vw;
+  max-height: 95vh;
+  border-radius: 8px;
+}
+
+/* Footer */
+footer {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>cualm — Demo Showcase</h1>
+    <p>A model-agnostic Computer Use Agent controlling a Linux desktop via screenshot → LLM → command loop.</p>
+  </div>
+</header>
+
+<nav>
+  <div class="container" style="display:flex;gap:8px;justify-content:center;">
+    <a href='#webarena'>WebArena</a>
+    <a href='#coverage'>Coverage</a>
+    <a href='#wikipedia'>Wikipedia</a>
+    <a href='#architecture'>Architecture</a>
+  </div>
+</nav>
+
+
+<section id="webarena">
+  <div class="container">
+    <h2><span class="emoji">🏪</span>WebArena Benchmark</h2>
+    <p class="section-desc">The agent solves real web tasks on self-hosted e-commerce, forum, and git platforms. 812 tasks across 5 sites.</p>
+
+
+    <h3>Agent Steps</h3>
+    <div class="video-wrap">
+      <video controls loop muted playsinline>
+        <source src="webarena/steps.mp4" type="video/mp4">
+      </video>
+      <div class="video-label">Screenshot timelapse — each frame is one agent step</div>
+    </div>
+
+
+    <h3>Trace Viewer</h3>
+    <div class="video-wrap">
+      <video controls loop muted playsinline>
+        <source src="webarena/trace_scroll.mp4" type="video/mp4">
+      </video>
+      <div class="video-label">Interactive trace viewer walkthrough — step-by-step reasoning, commands, and outputs</div>
+    </div>
+
+
+    <p style="margin-top:12px;"><a href="webarena/trace.html" style="color:var(--accent);font-family:var(--font-mono);font-size:0.9rem;">→ Open full interactive trace viewer</a></p>
+
+  </div>
+</section>
+
+<section id="coverage">
+  <div class="container">
+    <h2><span class="emoji">📊</span>Coverage Benchmark</h2>
+    <p class="section-desc">The agent explores a web app to maximize JavaScript code coverage — clicking buttons, filling forms, navigating menus.</p>
+    <div class="result-badge info">Model: extra.Qwen_Qwen3.5-35B-A3B-GGUF · 9 steps</div>
+
+
+    <h3>Agent Exploration</h3>
+    <div class="video-wrap">
+      <video controls loop muted playsinline>
+        <source src="coverage/steps.mp4" type="video/mp4">
+      </video>
+      <div class="video-label">Timelapse of the agent exploring the web application</div>
+    </div>
+
+    <h3>Steps</h3>
+    <div class='step-list'>
+      <div class="step"><span class="step-num">1</span><span class="cmd">cua-plan "Survey all UI sections | Test Counter buttons (+1, -1, ×2, Reset) | Test Tasks feature (add task with priority</span></div>
+      <div class="step"><span class="step-num">2</span><span class="cmd">cua-pw click e4 && sleep 0.2 && cua-pw click e4 && sleep 0.2 && cua-pw click e5</span></div>
+      <div class="step"><span class="step-num">3</span><span class="cmd">cua-pw fill e7 "Test task 1" && cua-pw select e8 "High" && cua-pw click e12</span></div>
+      <div class="step"><span class="step-num">4</span><span class="cmd">cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks f</span></div>
+      <div class="step"><span class="step-num">5</span><span class="cmd">cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks f</span></div>
+      <div class="step"><span class="step-num">6</span><span class="cmd">cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks f</span></div>
+      <div class="step"><span class="step-num">7</span><span class="cmd">cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks f</span></div>
+      <div class="step"><span class="step-num">8</span><span class="cmd">cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks f</span></div>
+      <div class="step"><span class="step-num">9</span><span class="cmd">cua-plan "[DONE] 1. Survey all UI sections | [DONE] 2. Test Counter buttons (+1, -1, ×2, Reset) | [DONE] 3. Test Tasks f</span></div>
+    </div>
+    <h3>Screenshots</h3>
+    <div class='gallery'>
+      <div><img src="coverage/audit/session_20260409_204800/step_001_20260409_204807_307.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_001_20260409_204807_307</div></div>
+      <div><img src="coverage/audit/session_20260409_204800/step_003_20260409_204914_037.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_003_20260409_204914_037</div></div>
+      <div><img src="coverage/audit/session_20260409_204800/step_005_20260409_205010_036.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_005_20260409_205010_036</div></div>
+      <div><img src="coverage/audit/session_20260409_204800/step_006_20260409_205107_127.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_006_20260409_205107_127</div></div>
+      <div><img src="coverage/audit/session_20260409_204800/step_008_20260409_205205_286.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_008_20260409_205205_286</div></div>
+      <div><img src="coverage/audit/session_20260409_204800/step_010_20260409_205257_769.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_010_20260409_205257_769</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="wikipedia">
+  <div class="container">
+    <h2><span class="emoji">📱</span>Wikipedia via XMPP</h2>
+    <p class="section-desc">Send a task from your phone via XMPP → orchestrator spawns an agent → result sent back as a chat message.</p>
+
+    <div class="result-badge pass">✅ cua-done "Found today's featured article" --result "Solidus of Theophilos sb1653 (reverse)"</div>
+
+    <h3>Agent Screen</h3>
+    <div class="video-wrap">
+      <video controls loop muted playsinline>
+        <source src="wikipedia/steps.mp4" type="video/mp4">
+      </video>
+      <div class="video-label">What the agent sees while completing the task</div>
+    </div>
+
+    <h3>XMPP Conversation</h3>
+    <div class='chat'>
+      <div class="chat-msg system"><div class="body">Connecting to 127.0.0.1:5222...</div></div>
+      <div class="chat-msg system"><div class="body">TLS established</div></div>
+      <div class="chat-msg system"><div class="body">Authenticated as user@cua.local</div></div>
+      <div class="chat-msg system"><div class="body">Bound resource: demo-317028</div></div>
+      <div class="chat-msg"><div class="sender user">You<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:22</span></div><div class="body">Go to wikipedia.org, click on the English Wikipedia link, then click on today's featured article and tell me its title</div></div>
+      <div class="chat-msg system"><div class="body">Waiting up to 300s for response...</div></div>
+      <div class="chat-msg system"><div class="body">Joining room: task-1-go-to-wikipedia-org-click-on-t@conference.cua.local</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:22</span></div><div class="body">task-1-go-to-wikipedia-org-click-on-t@conference.cua.local/orchestrator invited you to the room task-1-go-to-wikipedia-org-click-on-t@conference.cua.local (Task #1: Go to wikipedia.org, click on the English Wikipedia link, then click on today's featured article and)</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 0.1s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:22</span></div><div class="body">🚀 Starting task #1: Go to wikipedia.org, click on the English Wikipedia link, then click on today's featured article and
+Follow progress in: task-1-go-to-wikipedia-org-click-on-t@conference.cua.local</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 0.1s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:30</span></div><div class="body">── Step 1 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 8.6s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:44</span></div><div class="body">▶️ cua-plan "Step 1: Navigate to wikipedia.org | Step 2: Click on English Wikipedia link | Step 3: Click on today's featured article | Step 4: Extract and report the article title"</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 22.2s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:45</span></div><div class="body">── Step 2 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 23.2s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:56</span></div><div class="body">🖱️ cua-click 450 60 && cua-type "wikipedia.org" && cua-key Return</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 34.2s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:54:57</span></div><div class="body">── Step 3 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 35.7s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:55:16</span></div><div class="body">▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | Step 2: Click on English Wikipedia link | Step 3: Click on today's featured article | Step 4: Extract and report the article title" && cua-pw click e1</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 54.2s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:55:17</span></div><div class="body">── Step 4 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 55.7s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:55:42</span></div><div class="body">▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | Step 3: Click on today's featured article | Step 4: Extract and report the article title" && cua-pw click e31</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 80.2s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:55:44</span></div><div class="body">── Step 5 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 81.8s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:56:06</span></div><div class="body">▶️ cua-cdp-js "document.querySelector('h1')?.innerText || document.title"</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 104.3s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:56:07</span></div><div class="body">── Step 6 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 104.8s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:56:31</span></div><div class="body">✅ cua-done "Found today's featured article" --result "Solidus of Theophilos sb1653 (reverse)"</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 129.3s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:56:32</span></div><div class="body">── Step 7 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 129.8s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:56:52</span></div><div class="body">▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | [FAIL] Step 3: Click on today's featured article - clicked wrong link | Return to main page | Find and click Today's featured article | Report title" && cua-key Backspace</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 149.9s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:56:53</span></div><div class="body">── Step 8 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 150.8s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:57:10</span></div><div class="body">⌨️ cua-key Backspace && cua-wait</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 168.4s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:57:12</span></div><div class="body">── Step 9 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 169.9s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:57:35</span></div><div class="body">🖱️ cua-click 17 58 && cua-wait</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 192.9s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:57:36</span></div><div class="body">── Step 10 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 194.4s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:58:01</span></div><div class="body">▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | [DONE] Step 3: Return to main page | Step 4: Click on today's featured article (about Constantine) | Step 5: Report title"</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 218.9s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:58:01</span></div><div class="body">── Step 11 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 219.4s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:58:26</span></div><div class="body">▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | [DONE] Step 3: Return to main page | Step 4: Click on today's featured article (about Constantine) | Step 5: Report title" && cua-pw click e34</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 244.5s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:58:28</span></div><div class="body">── Step 12 ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 246.0s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:58:50</span></div><div class="body">✅ #1: Today's featured article title
+Result: Constantine (son of Theophilos)
+(12 steps, 268.2s)</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 268.5s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:58:50</span></div><div class="body">✅ #1: Today's featured article title
+Result: Constantine (son of Theophilos)
+(12 steps, 268.2s)</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 268.5s</div></div>
+      <div class="chat-msg"><div class="sender agent">Agent<span style="color:var(--text-dim);font-size:0.75rem;margin-left:8px;">22:58:50</span></div><div class="body">── Task complete ──</div></div>
+      <div class="chat-msg system"><div class="body">Response received in 268.5s</div></div>
+      <div class="chat-msg system"><div class="body">Task completed in 268.5s</div></div>
+      <div class="chat-msg system"><div class="body">Done</div></div>
+    </div>
+    <h3>Agent Screenshots</h3>
+    <div class='gallery'>
+      <div><img src="wikipedia/screenshots/step_0001.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0001</div></div>
+      <div><img src="wikipedia/screenshots/step_0012.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0012</div></div>
+      <div><img src="wikipedia/screenshots/step_0024.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0024</div></div>
+      <div><img src="wikipedia/screenshots/step_0035.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0035</div></div>
+      <div><img src="wikipedia/screenshots/step_0046.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0046</div></div>
+      <div><img src="wikipedia/screenshots/step_0057.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0057</div></div>
+      <div><img src="wikipedia/screenshots/step_0069.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0069</div></div>
+      <div><img src="wikipedia/screenshots/step_0080.png" alt="Step" onclick="showLightbox(this.src)" loading="lazy"><div class="caption">step_0080</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="container">
+    <h2><span class="emoji">🏗️</span>Architecture</h2>
+    <p class="section-desc">The agent runs inside Docker — Xvfb + Chromium + xdotool. Each step: take screenshot → send to LLM → parse command → execute → repeat.</p>
+    <div class="step-list">
+      <div class="step"><span class="step-num">1</span><span class="cmd">Screenshot via scrot → base64 PNG</span></div>
+      <div class="step"><span class="step-num">2</span><span class="cmd">Accessibility tree via CDP → ref IDs for elements</span></div>
+      <div class="step"><span class="step-num">3</span><span class="cmd">LLM sees screenshot + a11y tree → outputs shell command</span></div>
+      <div class="step"><span class="step-num">4</span><span class="cmd">Agent executes: cua-click, cua-type, cua-pw, cua-cdp-js, etc.</span></div>
+      <div class="step"><span class="step-num">5</span><span class="cmd">Loop until cua-done or max steps reached</span></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>Generated from demo output &mdash; <a href="https://github.com/user/cualm">cualm</a></p>
+  </div>
+</footer>
+
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('active')">
+  <img id="lightbox-img" src="" alt="Screenshot">
+</div>
+
+<script>
+function showLightbox(src) {
+  const lb = document.getElementById('lightbox');
+  document.getElementById('lightbox-img').src = src;
+  lb.classList.add('active');
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('lightbox').classList.remove('active');
+});
+</script>
+
+</body>
+</html>

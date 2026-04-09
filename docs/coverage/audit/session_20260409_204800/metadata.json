@@ -1,0 +1,6 @@
+{
+  "task": "You are testing a web application at: http://coverage-target/\nYour goal is to maximize code coverage by exploring every feature,\nclicking every button, filling every form, opening every menu,\nand navigating every page.\n\nCoverage snapshots are taken automatically every few steps and shown\nin your context. Use \"cua-cdp-coverage report\" to find which files\nstill have low coverage and target those areas.\n\nStrategy:\n1. Start by surveying the page \u2014 read the a11y tree and explore the UI.\n2. Systematically explore: navigation menus, links, buttons, forms,\n   dropdowns, tabs, modals, accordions, search, filters.\n3. Try to trigger error states, edge cases, empty states too.\n4. Fill forms with realistic data and submit them.\n5. Test interactive features: sorting, pagination, drag-and-drop,\n   date pickers, file uploads, etc.\n6. When coverage stops increasing, run: cua-cdp-coverage report\n   to find the least-covered files, then target those areas.\n\nWhen you believe you've maximized coverage or exhausted all reachable\nfeatures, use: cua-done \"Coverage testing complete\" --result \"<final_%>\"\n",
+  "model": "extra.Qwen_Qwen3.5-35B-A3B-GGUF",
+  "started_at": "2026-04-09T20:48:00.842339",
+  "screen": "1280x720"
+}

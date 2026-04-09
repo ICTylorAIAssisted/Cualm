@@ -1,0 +1,163 @@
+
+[1m╭─────────────────────────────────────────╮[0m
+[1m│         CUA Agent — XMPP Demo           │[0m
+[1m╰─────────────────────────────────────────╯[0m
+
+  [2m[Connecting to 127.0.0.1:5222...][0m
+  [2m[TLS established][0m
+  [2m[Authenticated as user@cua.local][0m
+  [2m[Bound resource: demo-317028][0m
+
+[2m22:54:22[0m [1;34mYou:[0m
+  Go to wikipedia.org, click on the English Wikipedia link, then click on today's featured article and tell me its title
+
+  [2m[Waiting up to 300s for response...][0m
+  [2m[Joining room: task-1-go-to-wikipedia-org-click-on-t@conference.cua.local][0m
+
+[2m22:54:22[0m [1;32mAgent:[0m
+  task-1-go-to-wikipedia-org-click-on-t@conference.cua.local/orchestrator invited you to the room task-1-go-to-wikipedia-org-click-on-t@conference.cua.local (Task #1: Go to wikipedia.org, click on the English Wikipedia link, then click on today's featured article and)
+
+  [2m[Response received in 0.1s][0m
+
+[2m22:54:22[0m [1;32mAgent:[0m
+  🚀 Starting task #1: Go to wikipedia.org, click on the English Wikipedia link, then click on today's featured article and
+  Follow progress in: task-1-go-to-wikipedia-org-click-on-t@conference.cua.local
+
+  [2m[Response received in 0.1s][0m
+
+[2m22:54:30[0m [1;32mAgent:[0m
+  ── Step 1 ──
+
+  [2m[Response received in 8.6s][0m
+
+[2m22:54:44[0m [1;32mAgent:[0m
+  ▶️ cua-plan "Step 1: Navigate to wikipedia.org | Step 2: Click on English Wikipedia link | Step 3: Click on today's featured article | Step 4: Extract and report the article title"
+
+  [2m[Response received in 22.2s][0m
+
+[2m22:54:45[0m [1;32mAgent:[0m
+  ── Step 2 ──
+
+  [2m[Response received in 23.2s][0m
+
+[2m22:54:56[0m [1;32mAgent:[0m
+  🖱️ cua-click 450 60 && cua-type "wikipedia.org" && cua-key Return
+
+  [2m[Response received in 34.2s][0m
+
+[2m22:54:57[0m [1;32mAgent:[0m
+  ── Step 3 ──
+
+  [2m[Response received in 35.7s][0m
+
+[2m22:55:16[0m [1;32mAgent:[0m
+  ▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | Step 2: Click on English Wikipedia link | Step 3: Click on today's featured article | Step 4: Extract and report the article title" && cua-pw click e1
+
+  [2m[Response received in 54.2s][0m
+
+[2m22:55:17[0m [1;32mAgent:[0m
+  ── Step 4 ──
+
+  [2m[Response received in 55.7s][0m
+
+[2m22:55:42[0m [1;32mAgent:[0m
+  ▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | Step 3: Click on today's featured article | Step 4: Extract and report the article title" && cua-pw click e31
+
+  [2m[Response received in 80.2s][0m
+
+[2m22:55:44[0m [1;32mAgent:[0m
+  ── Step 5 ──
+
+  [2m[Response received in 81.8s][0m
+
+[2m22:56:06[0m [1;32mAgent:[0m
+  ▶️ cua-cdp-js "document.querySelector('h1')?.innerText || document.title"
+
+  [2m[Response received in 104.3s][0m
+
+[2m22:56:07[0m [1;32mAgent:[0m
+  ── Step 6 ──
+
+  [2m[Response received in 104.8s][0m
+
+[2m22:56:31[0m [1;32mAgent:[0m
+  ✅ cua-done "Found today's featured article" --result "Solidus of Theophilos sb1653 (reverse)"
+
+  [2m[Response received in 129.3s][0m
+
+[2m22:56:32[0m [1;32mAgent:[0m
+  ── Step 7 ──
+
+  [2m[Response received in 129.8s][0m
+
+[2m22:56:52[0m [1;32mAgent:[0m
+  ▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | [FAIL] Step 3: Click on today's featured article - clicked wrong link | Return to main page | Find and click Today's featured article | Report title" && cua-key Backspace
+
+  [2m[Response received in 149.9s][0m
+
+[2m22:56:53[0m [1;32mAgent:[0m
+  ── Step 8 ──
+
+  [2m[Response received in 150.8s][0m
+
+[2m22:57:10[0m [1;32mAgent:[0m
+  ⌨️ cua-key Backspace && cua-wait
+
+  [2m[Response received in 168.4s][0m
+
+[2m22:57:12[0m [1;32mAgent:[0m
+  ── Step 9 ──
+
+  [2m[Response received in 169.9s][0m
+
+[2m22:57:35[0m [1;32mAgent:[0m
+  🖱️ cua-click 17 58 && cua-wait
+
+  [2m[Response received in 192.9s][0m
+
+[2m22:57:36[0m [1;32mAgent:[0m
+  ── Step 10 ──
+
+  [2m[Response received in 194.4s][0m
+
+[2m22:58:01[0m [1;32mAgent:[0m
+  ▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | [DONE] Step 3: Return to main page | Step 4: Click on today's featured article (about Constantine) | Step 5: Report title"
+
+  [2m[Response received in 218.9s][0m
+
+[2m22:58:01[0m [1;32mAgent:[0m
+  ── Step 11 ──
+
+  [2m[Response received in 219.4s][0m
+
+[2m22:58:26[0m [1;32mAgent:[0m
+  ▶️ cua-plan "[DONE] Step 1: Navigate to wikipedia.org | [DONE] Step 2: Click on English Wikipedia link | [DONE] Step 3: Return to main page | Step 4: Click on today's featured article (about Constantine) | Step 5: Report title" && cua-pw click e34
+
+  [2m[Response received in 244.5s][0m
+
+[2m22:58:28[0m [1;32mAgent:[0m
+  ── Step 12 ──
+
+  [2m[Response received in 246.0s][0m
+
+[2m22:58:50[0m [1;32mAgent:[0m
+  ✅ #1: Today's featured article title
+  Result: Constantine (son of Theophilos)
+  (12 steps, 268.2s)
+
+  [2m[Response received in 268.5s][0m
+
+[2m22:58:50[0m [1;32mAgent:[0m
+  ✅ #1: Today's featured article title
+  Result: Constantine (son of Theophilos)
+  (12 steps, 268.2s)
+
+  [2m[Response received in 268.5s][0m
+
+[2m22:58:50[0m [1;32mAgent:[0m
+  ── Task complete ──
+
+  [2m[Response received in 268.5s][0m
+  [2m[Task completed in 268.5s][0m
+  [2m[Done][0m
+
