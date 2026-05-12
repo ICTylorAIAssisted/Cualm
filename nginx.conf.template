@@ -1,0 +1,17 @@
+# Rendered by nginx's envsubst at container start.
+# Variables: UPSTREAM_HOST, UPSTREAM_PORT — set on the gateway service.
+#
+# Gateway listens on a fixed port (8080) regardless of where the host
+# LLM lives. The agent always targets http://coverage-gateway:8080/...
+
+server {
+    listen 8080;
+
+    location / {
+        proxy_pass http://${UPSTREAM_HOST}:${UPSTREAM_PORT};
+        proxy_set_header Host $http_host;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        client_max_body_size 50m;
+    }
+}

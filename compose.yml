@@ -1,0 +1,78 @@
+services:
+  # Built-in demo target — a small site served on the internal network.
+  # Used when TARGET_URL is unset / points at the bundled site.
+  coverage-target:
+    image: python:3.12-slim
+    container_name: coverage-target
+    working_dir: /site
+    command: ["python3", "-m", "http.server", "80", "--bind", "0.0.0.0"]
+    volumes:
+      - ./benchmark/coverage-target:/site:ro,z
+    networks:
+      - coverage-net
+
+  # LLM gateway — listens on a fixed port (8080), proxies to the host
+  # LLM identified by UPSTREAM_HOST:UPSTREAM_PORT. nginx's built-in
+  # envsubst over /etc/nginx/templates/*.template handles substitution
+  # at container start — no host-side templating needed.
+  coverage-gateway:
+    image: nginx:alpine
+    container_name: coverage-gateway
+    environment:
+      - UPSTREAM_HOST=${UPSTREAM_HOST:-host.docker.internal}
+      - UPSTREAM_PORT=${UPSTREAM_PORT:-11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro,z
+    networks:
+      - coverage-net
+      - coverage-ext
+
+  # The agent itself. Only on the internal coverage-net — it can reach
+  # coverage-target and coverage-gateway, nothing else.
+  cua-agent:
+    build:
+      context: .
+    image: cua-agent
+    container_name: cua-agent
+    depends_on:
+      - coverage-target
+      - coverage-gateway
+    networks:
+      - coverage-net
+    environment:
+      - OPENAI_BASE_URL=http://coverage-gateway:8080${UPSTREAM_PATH:-/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
+      - CUA_MODEL=${CUA_MODEL:-}
+      - CUA_MAX_STEPS=${CUA_MAX_STEPS:-50}
+      - CUA_TEMPERATURE=${CUA_TEMPERATURE:-}
+      - CUA_TOP_P=${CUA_TOP_P:-}
+      - CUA_PRESENCE_PENALTY=${CUA_PRESENCE_PENALTY:-}
+      - CUA_LLM_EXTRA_PARAMS=${CUA_LLM_EXTRA_PARAMS:-}
+      - CUA_AUDIT_DIR=/app/audit
+      # Coverage run knobs (read by /app/coverage-entrypoint.sh)
+      - TARGET_URL=${TARGET_URL:-http://coverage-target/}
+      - COVERAGE_TIMEOUT=${COVERAGE_TIMEOUT:-900}
+      - COVERAGE_TARGET_PCT=${COVERAGE_TARGET_PCT:-}
+      - COVERAGE_SNAPSHOT_INTERVAL=${COVERAGE_SNAPSHOT_INTERVAL:-1}
+      - COVERAGE_CREDENTIALS=${COVERAGE_CREDENTIALS:-}
+    volumes:
+      - cua-calibration:/var/cua/calibration
+      - ${OUTPUT_DIR:-./out}:/app/audit:z
+    ports:
+      - "${VNC_PORT:-5900}:5900"
+    entrypoint: ["/app/coverage-entrypoint.sh"]
+
+networks:
+  # Internal — agent can only talk to coverage-target and the gateway.
+  coverage-net:
+    name: coverage-net
+    internal: true
+  # External — gateway uses this to reach the host LLM via host.docker.internal.
+  coverage-ext:
+    name: coverage-ext
+
+volumes:
+  cua-calibration:
+    name: cua-calibration

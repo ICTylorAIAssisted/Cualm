@@ -42,10 +42,12 @@ COPY calibration /app/calibration
 COPY benchmark/coverage.py /app/benchmark/coverage.py
 COPY benchmark/coverage-target /app/benchmark/coverage-target
 COPY benchmark/coverage-test /app/benchmark/coverage-test
+COPY coverage-entrypoint.sh /app/coverage-entrypoint.sh
 
 RUN chmod +x /app/tools/* && \
     chmod +x /app/agent.py && \
     chmod +x /app/start.sh && \
+    chmod +x /app/coverage-entrypoint.sh && \
     mkdir -p /var/cua/calibration
 
 # Tools import cua_config as a module — make sure /app is on PYTHONPATH
