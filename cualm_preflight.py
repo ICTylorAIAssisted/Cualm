@@ -330,7 +330,7 @@ def run_checks(info: SystemInfo) -> list[CheckResult]:
                 name="Agent image",
                 ok=False,
                 message="cua-agent image not found",
-                hint="Build with: ./run.sh build",
+                hint="Build with: docker compose build",
             ))
 
     # 4. GPU

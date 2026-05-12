@@ -6,18 +6,11 @@ maximizing JS+CSS code coverage. Uses CDP to record coverage and
 injects coverage snapshots into the agent's prompt so it can
 prioritize unexplored areas.
 
-Usage:
-  # Against a local dev server
-  ./coverage-bench.py --url http://localhost:3000 --max-steps 50
+Invoked inside the cua-agent container by /app/coverage-entrypoint.sh,
+which derives flags from environment variables set by coverage.sh /
+docker compose. Direct invocation:
 
-  # With a coverage target
-  ./coverage-bench.py --url http://localhost:3000 --target 80
-
-  # Against a running CUA container (attach mode)
-  ./coverage-bench.py --attach --url http://localhost:3000
-
-  # Output results as JSON
-  ./coverage-bench.py --url http://localhost:3000 --json results.json
+  python3 /app/benchmark/coverage.py --url <URL> --max-steps N [--target PCT] [--json out.json]
 """
 
 import argparse

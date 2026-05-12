@@ -51,7 +51,7 @@ def agent_image(runtime):
         capture_output=True,
     )
     if result.returncode != 0:
-        pytest.skip("cua-agent image not built (run: ./run.sh build)")
+        pytest.skip("cua-agent image not built (run: docker compose build)")
 
 
 class TestAgentNavigation:

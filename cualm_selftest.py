@@ -111,7 +111,7 @@ def test_agent_image_exists():
     elapsed = time.monotonic() - t0
     if ok:
         return True, "cua-agent:latest", elapsed
-    return False, "Image not found — run: ./run.sh build", elapsed
+    return False, "Image not found — run: docker compose build", elapsed
 
 
 def test_agent_starts():
