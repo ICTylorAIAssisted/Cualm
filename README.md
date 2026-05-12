@@ -1,260 +1,213 @@
-# Cualm
+# cua-monkey
 
-**Computer Use Agent, Little Manager**
+A standalone **coverage / monkey tester** for web applications. A computer-use agent drives a real Chromium browser against a target URL, fed live coverage snapshots through Chrome DevTools so it can steer toward un-exercised code. Single-purpose: maximize JS+CSS coverage. Stops on a configurable timeout, step cap, or target coverage percentage.
 
-A model-agnostic agent that operates a Linux desktop through a screenshot → LLM → command loop. It runs inside a Docker container with Xvfb, Chromium, and xdotool, and works with any OpenAI-compatible API — local models (Qwen, Llama), Claude, GPT-4V, or anything with a `/v1/chat/completions` endpoint.
-
-Cualm comes with two benchmarks:
-
-- **WebArena** — 812 real web tasks across 5 self-hosted sites (Magento, Reddit, GitLab, Wikipedia, maps)
-- **Coverage Benchmark** — explore a website to maximize JS+CSS code coverage
+Runs as a Docker (or Podman) compose stack. The agent container ships with Xvfb, Chromium, xdotool, Playwright, ffmpeg, and all the agent tooling — your host needs only `docker` (or `podman`) and an OpenAI-compatible LLM endpoint to point at.
 
 ```
-┌─────────────────────────────────────┐
-│          Agent Container            │
-│                                     │
-│  Screenshot ──→ LLM ──→ Command    │
-│      ↑                    │         │
-│      └────────────────────┘         │
-│                                     │
-│  Xvfb  Chromium  xdotool  tools/   │
-└─────────────────────────────────────┘
+┌─────────────────────── coverage-net (internal) ───────────────────────┐
+│                                                                       │
+│   coverage-target  ◀──────  cua-agent  ──────▶  coverage-gateway      │
+│   (built-in demo)           (Chromium +                │              │
+│                              CDP coverage              │              │
+│                              loop)                     ▼              │
+│                                                  host.docker.internal │
+│                                                       LLM endpoint    │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+The agent lives on an internal Docker network and can only reach the target site and the LLM gateway — it has no other network access.
+
+---
+
+## Quick start
+
+```bash
+# 1. Configure: copy the example, point UPSTREAM_HOST/PORT at your LLM
+cp .env.example .env
+$EDITOR .env
+
+# 2. Run against the bundled demo site, 5-minute budget
+./coverage.sh --minutes 5
+
+# 3. Or run against your own URL
+./coverage.sh --url http://localhost:3000 --minutes 10 --target 80
+
+# 4. Watch live (optional) — connect any VNC viewer to localhost:5900
+```
+
+Outputs land in `./out/` by default:
+
+```
+out/
+├── audit/session_<ts>/   # per-step screenshots, a11y dumps, LLM I/O
+├── terminal.log          # stdout of the run
+└── steps.mp4             # only if --video was passed
 ```
 
 ---
 
-## Quick Start
+## `coverage.sh` flags
 
-```bash
-# 1. Build the agent image
-./run.sh build
-
-# 2. Run a single task interactively (opens VNC on :5900)
-OPENAI_BASE_URL=http://localhost:8000/v1 \
-CUA_MODEL=your-model \
-  docker run -it --rm -p 5900:5900 \
-    -e OPENAI_BASE_URL -e CUA_MODEL \
-    cua-agent agent "Search for 'wireless mouse' on the shopping site"
-
-# 3. Connect to VNC to watch
-open vnc://localhost:5900    # macOS
-# or use any VNC viewer on port 5900
-```
-
-## WebArena Benchmark
-
-```bash
-# Start WebArena sites and run tasks
-./benchmark.sh --site shopping --tasks 0-20
-
-# Run with WA-Verified evaluation
-./benchmark.sh --webarena-verified --tasks 0-50
-
-# Human mode — opens VNC, shows task, no agent
-./benchmark.sh --tasks 0 --human
-
-# Stop and clean up
-./benchmark.sh down
-```
-
-WebArena sites run in isolated Docker networks. An nginx gateway routes traffic so the agent sees `localhost:PORT` URLs matching WebArena's hardcoded addresses, while the LLM API is proxied through to the host.
-
-## Coverage Benchmark
-
-Measures how much of a website's JavaScript and CSS the agent can exercise through exploration.
-
-```bash
-# Run against the bundled test app
-./benchmark.sh --coverage
-
-# With options
-./benchmark.sh --coverage --max-steps 30 --target 80
-
-# Custom URL
-./benchmark.sh --coverage --url http://myapp:3000
-
-# Force re-calibration
-./benchmark.sh --coverage --recalibrate
-
-# Verify coverage tracking is working correctly
-./benchmark.sh --coverage-test
-```
-
-The agent automatically receives coverage snapshots every step, injected into its prompt so it knows which areas it has and hasn't explored.
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
+| Flag | Default | Description |
 |---|---|---|
-| `OPENAI_BASE_URL` | `http://localhost:8000/v1` | LLM endpoint |
-| `OPENAI_API_KEY` | `not-needed` | API key |
-| `CUA_MODEL` | `your-model-name` | Model identifier |
-| `CUA_MAX_STEPS` | `50` | Max agent steps per task |
-| `CUA_TEMPERATURE` | `0.7` | LLM temperature |
-| `CUA_TOP_P` | `0.95` | LLM top_p |
-| `CUA_PRESENCE_PENALTY` | `1.5` | Presence penalty |
-| `CUA_LLM_EXTRA_PARAMS` | `{}` | Extra JSON for `extra_body` (e.g. `{"top_k":20}`) |
-| `CUA_START_URL` | *(calibration page)* | URL for Chromium to open |
-| `CUA_HISTORY_PAIRS` | `0` | Old message pairs to keep in context |
-| `CUA_VNC_PORT` | `5900` | Host port for VNC |
+| `--url URL` | bundled demo site | Target URL |
+| `--minutes N` | 15 | Wall-clock timeout |
+| `--max-steps N` | 50 | Hard cap on agent steps |
+| `--target PCT` | — | Stop early when coverage reaches this % |
+| `--snapshot-interval N` | 1 | Coverage snapshot every N steps |
+| `--credentials USER:PASS` | — | Injected into the agent task for login flows |
+| `--api-base URL` | from `.env` | OpenAI-compatible endpoint on the host |
+| `--api-key KEY` | from `.env` | |
+| `--model NAME` | from `.env` | |
+| `--output DIR` | `./out` | Audit / log / video destination |
+| `--video` | off | Render a `steps.mp4` timelapse at end of run |
+| `--vnc-port PORT` | 5900 | Host port for live VNC viewing |
+| `--no-vnc` | off | Don't bind VNC |
+| `--recalibrate` | off | Wipe cached mouse calibration before run |
+| `--keep` | off | Don't `docker compose down` on exit |
+| `-h`, `--help` | | This summary |
 
-All LLM parameters fall back to `config.ini` if the env var is unset or empty.
-
-### config.ini
-
-Screen resolution, LLM defaults, delays, and calibration settings. The Docker image syncs `SCREEN_WIDTH` / `SCREEN_HEIGHT` env vars into this file at startup.
+Flags override anything set in `.env`. See [`.env.example`](.env.example) for every knob.
 
 ---
 
-## How It Works
+## Direct compose use
 
-### Agent Loop
+`coverage.sh` is a thin wrapper. You can drive the stack directly:
+
+```bash
+# Build the agent image once
+docker compose build
+
+# Run with .env supplying all knobs
+docker compose up --abort-on-container-exit --exit-code-from cua-agent
+
+# Tear down
+docker compose down
+```
+
+---
+
+## How it works
+
+### Agent loop
 
 Each step:
 
-1. **Screenshot** — captured via `scrot`
-2. **Accessibility tree** — fetched via CDP (`Accessibility.getFullAXTree`), truncated to 150 lines
-3. **Build prompt** — task + previous observation summary + last command/output + plan + a11y tree + screenshot
-4. **Call LLM** — any OpenAI-compatible API
-5. **Extract command** — parses `run: <command>` from response
-6. **Execute** — runs in shell, captures output
-7. **Summary** — extracts text from `<think>` block for next step's context (replaces image history)
+1. **Screenshot** captured via `scrot`.
+2. **Accessibility tree** fetched from Chromium via CDP (`Accessibility.getFullAXTree`), truncated to ~150 lines, decorated with `[ref=eN]` tags on interactive elements.
+3. **Coverage snapshot** every N steps via `cua-cdp-coverage report` — file-by-file JS/CSS coverage percentages injected into the agent's context.
+4. **Prompt → LLM → command.** The agent picks one `cua-*` tool invocation per step.
+5. **Execute** in shell; capture output for next step.
 
 ### Calibration
 
-Vision models interpret pixel coordinates differently depending on training. On first run, Cualm shows a calibration page with clickable dots. The model clicks them, and the offset/scale is computed and cached per model in a Docker volume. Subsequent runs skip calibration.
+Vision models interpret screen coordinates differently. On first run, the agent works through a calibration page (clickable dots at known offsets), computes a per-model offset/scale, and caches it in the `cua-calibration` Docker volume. Subsequent runs skip this. `--recalibrate` wipes the cache.
 
-### Planning
+### Coverage tracking
 
-The model manages a full-rewrite plan via `cua-plan`:
+`cua-cdp-coverage` runs as a background daemon inside the container, keeping a persistent CDP websocket so V8 profiler state survives across snapshot/report calls. It handles several CDP quirks:
 
-```bash
-cua-plan "Login | Navigate | Filter | Read data | Report"
-cua-plan "[DONE] Login | [DONE] Navigate | Filter | Read data | Report"
-cua-plan "[DONE] Login | [DONE] Navigate | [FAIL] Filter | Use JS instead | Report"
-```
+- **Counter resets** — `Profiler.takePreciseCoverage` zeroes counters after each call, so the daemon unions covered byte ranges cumulatively. Coverage only ever goes up.
+- **Nested ranges** — V8 returns nested ranges where inner ranges override outer counts. Each byte's coverage is resolved by the innermost enclosing range.
+- **Script lifecycle** — scripts that get garbage-collected disappear from CDP results; cumulative tracking preserves their coverage.
 
-`cua-done` refuses to complete if the plan has pending steps (unless `--force`).
+A self-test is available: `docker compose run --rm cua-agent python3 /app/benchmark/coverage-test/verify.py`.
 
-### Loop Detection
+### Loop detection
 
-The agent detects when it's stuck — 3 identical actions in a row or 6-step click-wait alternation triggers a warning injection suggesting alternative approaches (JS extraction, URL navigation, Ctrl+F search).
+The agent watches its own action history. Three identical actions in a row, or six-step click-wait alternation, triggers a warning that nudges toward alternative strategies (JS extraction via `cua-cdp-js`, URL navigation, Ctrl+F search).
 
-### Tools
+### Tools available to the agent
 
-| Tool | Description |
+| Tool | Purpose |
 |---|---|
-| `cua-click` | Click at coordinates (with calibration mapping) |
-| `cua-type` | Type text via xdotool |
-| `cua-key` | Key combos (`ctrl+a`, `Return`, `F12`, etc.) |
-| `cua-scroll` | Scroll with mousewheel |
-| `cua-drag` | Drag from A to B |
-| `cua-wait` | Wait (default 500ms, max 3s) |
-| `cua-screenshot` | Manual screenshot capture |
-| `cua-plan` | Full-rewrite planning |
-| `cua-done` | Signal task completion |
-| `cua-cdp-js` | Execute JavaScript in the browser via CDP |
-| `cua-cdp-coverage` | Manage JS+CSS coverage recording via CDP |
-| `cua-help` | Show tool help |
+| `cua-click` / `cua-drag` / `cua-key` / `cua-type` / `cua-scroll` | Coordinate-based input via xdotool (calibrated) |
+| `cua-pw` | Element-based input via Playwright + CDP (preferred — uses `[ref=eN]` from the a11y tree) |
+| `cua-wait` / `cua-screenshot` | Pacing + manual capture |
+| `cua-cdp-js` | Run JavaScript in the page via CDP |
+| `cua-cdp-coverage` | Snapshot / report / reset coverage |
+| `cua-plan` / `cua-done` | Plan management + completion signal |
+| `cua-help` | Self-describing tool index |
 
 Tools are auto-discovered from their `--help` output and injected into the system prompt.
 
-### Status Bar (HUD)
+### HUD overlay
 
-A Chrome extension displays a thin bar at the bottom of every page:
+A Chrome extension (`extensions/cua-hud/`) renders a thin status bar at the bottom of every page:
 
 ```
-scroll: 45% ↓1200px left │ page: 3400px (4.2 screens) │ dom: changed 2s ago │ focus: input#email │ url: /settings/profile
+scroll: 45% ↓1200px left │ page: 3400px (4.2 screens) │ dom: changed 2s ago │ focus: input#email │ url: /settings
 ```
 
-The agent uses this to check scroll position, detect page changes after actions, and verify which element has focus before typing.
+Helpful both for the agent (it reads this from the a11y tree) and for humans watching via VNC.
 
 ---
 
-## Project Structure
+## Project layout
 
 ```
-├── agent.py                 # Main agent loop + prompt template
-├── cdp_a11y.py              # Accessibility tree via CDP
-├── config.ini               # Screen size, LLM params, delays
+.
+├── compose.yml              # 3 services: coverage-target, coverage-gateway, cua-agent
+├── coverage.sh              # host-side wrapper around `docker compose up`
+├── coverage-entrypoint.sh   # in-container: boots Xvfb+Chromium, runs coverage.py
+├── nginx.conf.template      # gateway template, envsubst-rendered at boot
+├── Dockerfile               # cua-agent image
+├── .env.example             # every configurable knob
+│
+├── agent.py                 # the agent: screenshot → LLM → command loop
+├── cdp_a11y.py              # a11y tree extraction via CDP
+├── cua_config.py            # config.ini + calibration loading
+├── plugin_host.py           # plugin discovery
+├── tool_discovery.py        # tool discovery + system-prompt injection
+├── config.ini               # screen / LLM / mouse / scroll defaults
 ├── start.sh                 # Xvfb + Fluxbox + VNC + Chromium launcher
-├── Dockerfile               # Debian bookworm, Chromium, Python
-├── requirements.txt         # openai, Pillow, typer, websocket-client
-├── benchmark.sh             # Entry point for all benchmark modes
-├── tools/
-│   ├── cua-click            # Click (with calibration)
-│   ├── cua-type             # Type text
-│   ├── cua-key              # Key combos
-│   ├── cua-scroll           # Scroll
-│   ├── cua-drag             # Drag
-│   ├── cua-wait             # Wait
-│   ├── cua-screenshot       # Screenshot
-│   ├── cua-plan             # Planning
-│   ├── cua-done             # Task completion
-│   ├── cua-cdp-js           # JS execution via CDP
-│   └── cua-cdp-coverage     # Coverage daemon via CDP
-├── extensions/
-│   └── cua-hud/             # Chrome extension (status bar)
-├── plugins/
-│   └── audit.py             # Step-by-step audit logging
+│
 ├── benchmark/
-│   ├── run.py               # WebArena benchmark runner
-│   ├── config.py            # URL templates, credentials, defaults
-│   ├── gateway.py           # Nginx gateway for network isolation
-│   ├── evaluate.py          # Task evaluation (exact/fuzzy/url match)
-│   ├── verified.py          # WA-Verified integration
-│   ├── har.py               # mitmproxy addon for HAR capture
-│   ├── coverage.py          # Coverage benchmark orchestrator
-│   ├── coverage-target/     # Bundled test app for coverage mode
-│   └── coverage-test/       # Coverage verification tests
-└── compose.d/
-    ├── .webarena/            # WebArena site containers
-    └── .coverage/            # Coverage target + gateway
+│   ├── coverage.py          # orchestrates the coverage loop
+│   ├── coverage-target/     # built-in demo site (served on coverage-net)
+│   └── coverage-test/       # CDP coverage tracking sanity checks
+│
+├── tools/                   # cua-* tools the agent shells out to
+├── plugins/{audit,usage_tracking}.py
+├── extensions/cua-hud/      # in-page HUD overlay
+├── calibration/             # calibration target HTML
+│
+├── screenshots_to_video.py  # --video timelapse renderer
+├── cualm_preflight.py       # standalone environment diagnostics
+├── cualm_selftest.py        # 4-level smoke test (infra / image / LLM / e2e)
+│
+└── docs/coverage/           # example run output
 ```
 
 ---
 
-## Network Architecture
+## Configuration cheat sheet
 
-Both benchmarks use isolated Docker networks so the agent container has no direct internet access — it can only reach the target sites and the LLM via an nginx gateway.
+Every knob is documented in [`.env.example`](.env.example). The most common:
 
-```
-┌────────────────────────────────────────────────────┐
-│         internal network (no internet)             │
-│                                                    │
-│  target sites ←──→ nginx gateway ←──→ agent        │
-│                         │                          │
-└─────────────────────────┼──────────────────────────┘
-                          │
-┌─────────────────────────┼──────────────────────────┐
-│         bridge network                             │
-│  nginx gateway → host.docker.internal:LLM_PORT     │
-└────────────────────────────────────────────────────┘
-```
+| Variable | Purpose |
+|---|---|
+| `UPSTREAM_HOST`, `UPSTREAM_PORT`, `UPSTREAM_PATH` | Where the gateway forwards LLM traffic on your host |
+| `OPENAI_API_KEY`, `CUA_MODEL` | LLM credentials and model name |
+| `TARGET_URL` | Site under test (defaults to bundled demo) |
+| `CUA_MAX_STEPS`, `COVERAGE_TIMEOUT`, `COVERAGE_TARGET_PCT` | Termination conditions |
+| `OUTPUT_DIR` | Where audit + logs land on the host |
+| `CUA_TEMPERATURE`, `CUA_TOP_P`, `CUA_PRESENCE_PENALTY`, `CUA_LLM_EXTRA_PARAMS` | Sampling overrides for the LLM |
+
+LLM sampling params fall back to `config.ini` when unset.
 
 ---
 
-## Coverage Tracking
+## Diagnostics
 
-The coverage daemon (`cua-cdp-coverage`) keeps a persistent CDP websocket connection so profiler state survives across commands. It handles several V8 quirks:
+If a run fails to start, the standalone diagnostics scripts in the repo root are useful:
 
-- **Counter resets**: `Profiler.takePreciseCoverage` zeroes all counters after each call, so each snapshot only reports code run since the last call. The daemon unions covered byte ranges cumulatively — coverage can only go up.
-- **Nested ranges**: V8 returns nested ranges where inner ranges override outer counts. The daemon resolves coverage at each byte offset by finding the innermost enclosing range.
-- **Script lifecycle**: Scripts that get garbage-collected disappear from CDP results. Cumulative tracking preserves their coverage.
-
-Verify it works: `./benchmark.sh --coverage-test`
-
----
-
-## Performance Notes
-
-- Task 0 (20 steps): ~150K prompt + 3K completion tokens, ~374s, ~$0.04
-- Full WebArena (812 tasks): ~$25-39 estimated, ~8h at 10 parallel
-- 90% of time is input-bound (prefill), not generation
-- Screenshot: ~299 tokens at 1280×720 (Qwen2.5-VL)
-- Text summary replaces image history: ~80 tokens vs ~443 tokens → 49% reduction per step
+```bash
+python3 cualm_preflight.py     # check runtime, image, GPU, host LLM reachability
+python3 cualm_selftest.py      # 4-level smoke test
+```
 
 ---
 
