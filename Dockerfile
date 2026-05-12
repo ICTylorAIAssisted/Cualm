@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     procps \
     curl \
+    ffmpeg \
+    python3-pil \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
@@ -43,11 +45,13 @@ COPY benchmark/coverage.py /app/benchmark/coverage.py
 COPY benchmark/coverage-target /app/benchmark/coverage-target
 COPY benchmark/coverage-test /app/benchmark/coverage-test
 COPY coverage-entrypoint.sh /app/coverage-entrypoint.sh
+COPY screenshots_to_video.py /app/screenshots_to_video.py
 
 RUN chmod +x /app/tools/* && \
     chmod +x /app/agent.py && \
     chmod +x /app/start.sh && \
     chmod +x /app/coverage-entrypoint.sh && \
+    chmod +x /app/screenshots_to_video.py && \
     mkdir -p /var/cua/calibration
 
 # Tools import cua_config as a module — make sure /app is on PYTHONPATH
