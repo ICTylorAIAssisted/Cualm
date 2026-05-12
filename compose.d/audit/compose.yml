@@ -1,9 +1,0 @@
-# Audit extension — persists audit data on the host
-#
-# Pairs with plugins/audit.py.  If you remove the audit plugin,
-# remove this directory too.
-
-services:
-  cua:
-    volumes:
-      - ${CUA_AUDIT_DIR:-./audit}:/app/audit:z

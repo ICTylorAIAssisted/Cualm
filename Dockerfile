@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     procps \
     curl \
-    socat \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
@@ -43,18 +42,11 @@ COPY calibration /app/calibration
 COPY benchmark/coverage.py /app/benchmark/coverage.py
 COPY benchmark/coverage-target /app/benchmark/coverage-target
 COPY benchmark/coverage-test /app/benchmark/coverage-test
-COPY coverage-bench.sh /app/coverage-bench.sh
 
 RUN chmod +x /app/tools/* && \
     chmod +x /app/agent.py && \
     chmod +x /app/start.sh && \
-    chmod +x /app/coverage-bench.sh && \
-    find /app/plugins -path '*/tools/cua-*' -exec chmod +x {} + && \
     mkdir -p /var/cua/calibration
-
-# Install plugin requirements (if any)
-RUN find /app/plugins -name 'requirements.txt' -exec \
-    pip install --break-system-packages -q -r {} \;
 
 # Tools import cua_config as a module — make sure /app is on PYTHONPATH
 ENV PYTHONPATH="/app:${PYTHONPATH}"

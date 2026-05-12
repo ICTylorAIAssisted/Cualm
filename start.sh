@@ -30,22 +30,6 @@ eval $(dbus-launch --sh-syntax)
 x11vnc -display "${DISPLAY}" -forever -nopw -rfbport 5900 -bg -q
 echo "VNC available on port 5900"
 
-# ── Port forwarding (benchmark mode) ─────────────────────────────
-# CUA_PORT_FORWARDS maps localhost ports to WebArena site containers
-# so that sites' hardcoded base URLs (e.g. http://localhost:7770)
-# work from inside the agent container.
-# Format: "7770:shopping:80,7780:shopping_admin:80,..."
-if [ -n "${CUA_PORT_FORWARDS:-}" ]; then
-    IFS=',' read -ra FORWARDS <<< "$CUA_PORT_FORWARDS"
-    for fwd in "${FORWARDS[@]}"; do
-        IFS=':' read -r LOCAL_PORT REMOTE_HOST REMOTE_PORT <<< "$fwd"
-        socat "TCP-LISTEN:${LOCAL_PORT},fork,reuseaddr" \
-              "TCP:${REMOTE_HOST}:${REMOTE_PORT}" &
-        echo "Forward: localhost:${LOCAL_PORT} → ${REMOTE_HOST}:${REMOTE_PORT}"
-    done
-    sleep 1
-fi
-
 # In agent mode, always start with the calibration page — agent.py
 # navigates to CUA_START_URL after calibration completes.
 # In non-agent mode (e.g. human testing), open CUA_START_URL directly.
@@ -53,15 +37,6 @@ if [ "$1" = "agent" ]; then
     START_URL="file:///app/calibration/index.html"
 else
     START_URL="${CUA_START_URL:-file:///app/calibration/index.html}"
-fi
-
-# Optional HTTP proxy (mitmproxy for HAR capture)
-# --proxy-bypass-list=<-loopback> forces localhost traffic through
-# the proxy too — needed because WebArena sites redirect to localhost
-# URLs and we need those requests in the HAR trace.
-PROXY_ARGS=""
-if [ -n "${CUA_HTTP_PROXY:-}" ]; then
-    PROXY_ARGS="--proxy-server=$CUA_HTTP_PROXY --proxy-bypass-list=<-loopback>"
 fi
 
 # Set up Chrome profile with password manager disabled
@@ -105,7 +80,6 @@ chromium \
     --user-data-dir="$CHROME_PROFILE" \
     --password-store=basic \
     --disable-features=PasswordManager,TranslateUI,AutofillServerCommunication \
-    $PROXY_ARGS \
     "$START_URL" 2>/dev/null &
 sleep 2
 
