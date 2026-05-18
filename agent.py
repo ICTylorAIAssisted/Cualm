@@ -845,6 +845,7 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     last_command = ""
     last_output = ""
     last_summary = ""  # text summary from model's think block
+    parse_error_nudge = ""  # corrective note injected after a failed parse
     command_history: list[str] = []  # track all commands for loop detection
     PLAN_FILE = "/tmp/cua_plan.json"
 
@@ -1011,6 +1012,10 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             if coverage_text:
                 parts.append("")
                 parts.append(f"Coverage status:\n{coverage_text}")
+            if parse_error_nudge:
+                parts.append("")
+                parts.append(parse_error_nudge)
+                parse_error_nudge = ""
             parts.append("")
             parts.append(
                 "Here is the updated screenshot. "
@@ -1050,6 +1055,17 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             if errors_in_a_row >= MAX_PARSE_ERRORS:
                 print(f"   ✗ Too many parse errors ({MAX_PARSE_ERRORS}), stopping.")
                 break
+            # Drop the failed exchange before retrying — otherwise its
+            # screenshot lingers in `messages` and images pile up across
+            # retries until the prompt exceeds the server's image limit.
+            messages = trim_messages(messages)
+            # Tell the model what went wrong so the retry doesn't repeat it.
+            parse_error_nudge = (
+                "⚠ Your last reply contained no actionable command. You MUST "
+                "end your reply with exactly one line starting with 'run: ' "
+                "followed by a command, e.g. 'run: cua-pw click e15'. "
+                "Decide on a concrete next action and emit that line now."
+            )
             continue
 
         errors_in_a_row = 0
@@ -1057,6 +1073,7 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
         if not command:
             print("   ⚠ Empty command, skipping")
+            messages = trim_messages(messages)
             continue
 
         # ── Execute ──
