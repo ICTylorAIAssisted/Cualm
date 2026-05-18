@@ -1,1 +1,11 @@
 ./audit
+
+# Local env files (keep the committed template)
+.env
+.env.*
+!.env.example
+
+# Python / run artifacts
+__pycache__/
+*.pyc
+out/

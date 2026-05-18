@@ -1,17 +1,29 @@
 # Rendered by nginx's envsubst at container start.
-# Variables: UPSTREAM_HOST, UPSTREAM_PORT — set on the gateway service.
+# Variables: UPSTREAM_SCHEME, UPSTREAM_HOST, UPSTREAM_PORT — set on the
+# gateway service.
 #
 # Gateway listens on a fixed port (8080) regardless of where the host
 # LLM lives. The agent always targets http://coverage-gateway:8080/...
+#
+# UPSTREAM_SCHEME is `http` for a local LLM (LM Studio, Ollama, llama.cpp,
+# local vLLM) and `https` for a remote endpoint (Modal, OpenAI, Anthropic
+# through a compat proxy, etc.). The SSL/SNI directives below are no-ops
+# when the upstream is plain http, so they're always emitted.
 
 server {
     listen 8080;
 
     location / {
-        proxy_pass http://${UPSTREAM_HOST}:${UPSTREAM_PORT};
-        proxy_set_header Host $http_host;
+        proxy_pass ${UPSTREAM_SCHEME}://${UPSTREAM_HOST}:${UPSTREAM_PORT};
+
+        # For https upstreams (e.g. Modal) we need SNI + a Host header
+        # that matches the cert. For http upstreams these are harmless.
+        proxy_ssl_server_name on;
+        proxy_set_header Host ${UPSTREAM_HOST};
+
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
         client_max_body_size 50m;
+        client_body_buffer_size 10m;
     }
 }
