@@ -69,6 +69,19 @@ COVERAGE_INTERVAL = int(os.environ.get("CUA_COVERAGE_INTERVAL", "") or 1)
 
 CALIBRATION_PROMPT = "You see a button on screen. Click it."
 
+# Calibration uses a minimal system prompt so the model is forced to emit
+# `cua-click <x> <y>` (which records the coordinate offset). The full system
+# prompt promotes `cua-pw` for clicks, which would bypass calibration entirely.
+CALIBRATION_SYSTEM_PROMPT = """\
+You are calibrating screen-coordinate clicks for a mouse driver.
+Look at the screenshot and reply with EXACTLY one line, nothing else:
+
+run: cua-click <x> <y>
+
+where <x> and <y> are integer pixel coordinates at the visible center of the
+button shown in the screenshot. Do not use any other tool. Do not explain.
+Do not output anything before or after that single line."""
+
 PLUGINS_DIR = os.environ.get(
     "CUA_PLUGINS_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"),
@@ -536,7 +549,10 @@ def default_extract_command(ctx: dict, text: str) -> str:
     if m:
         text = m.group(1).strip()
 
-    # Scan lines for 'run:' prefix
+    # Scan lines for 'run:' prefix. Collect ALL of them — models often emit
+    # multiple `run:` lines (e.g. `run: cua-plan ...` then `run: cua-cdp-js
+    # ...`). Chain with `&&` so the first failure short-circuits the rest.
+    commands = []
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.lower().startswith("run:"):
@@ -547,9 +563,12 @@ def default_extract_command(ctx: dict, text: str) -> str:
                 # gets "cua-type X && cua-click Y" which works fine.
                 command = re.sub(r'\s*&&\s*run:\s*', ' && ', command)
                 command = re.sub(r'\s*;\s*run:\s*', ' ; ', command)
-                return command.strip()
+                commands.append(command.strip())
 
-    raise ValueError("No 'run: <command>' line found in response")
+    if not commands:
+        raise ValueError("No 'run: <command>' line found in response")
+
+    return " && ".join(commands)
 
 
 # ── Message helpers ───────────────────────────────────────
@@ -744,7 +763,7 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
                     plugins.emit("on_post_screenshot", ctx, img_b64=img_b64)
 
                     cal_messages = [
-                        make_system_msg(system_prompt),
+                        make_system_msg(CALIBRATION_SYSTEM_PROMPT),
                         make_user_msg(img_b64, CALIBRATION_PROMPT),
                     ]
 
