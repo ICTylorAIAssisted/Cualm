@@ -67,13 +67,15 @@ def _redact_messages(messages, current_screenshot):
     """Create a lightweight copy of messages for trace logging.
 
     Replaces base64 image data URIs with references to saved screenshot
-    files so the trace is readable without being bloated.
+    files so the trace is readable without being bloated. The system
+    prompt is kept verbatim — the trace viewer surfaces it in a
+    collapsible panel, and it carries no image data to bloat the file.
     """
     redacted = []
     for msg in messages:
         content = msg.get("content")
         if msg.get("role") == "system":
-            redacted.append({"role": "system", "content": "[system prompt]"})
+            redacted.append({"role": "system", "content": content})
         elif isinstance(content, list):
             parts = []
             for part in content:

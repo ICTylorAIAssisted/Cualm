@@ -111,6 +111,105 @@ def extract_prompt_text(llm_input: list) -> str:
     return ""
 
 
+def extract_section(prompt_text: str, start: str, ends: list) -> str:
+    """Slice the block starting at `start` and ending at the first `end`."""
+    if not prompt_text or start not in prompt_text:
+        return ""
+    section = prompt_text[prompt_text.index(start):]
+    cut = len(section)
+    for marker in ends:
+        if marker in section:
+            cut = min(cut, section.index(marker))
+    return section[:cut].strip()
+
+
+# Markers that delimit the dynamic blocks the agent appends to each prompt.
+_BLOCK_MARKERS = [
+    "\nCoverage status:", "\nAccessibility tree:", "\nCurrent plan:",
+    "\nHere is the updated", "\n⚠ WARNING:", "\nCreate a plan",
+]
+
+
+def parse_coverage(coverage_text: str) -> dict:
+    """Pull JS / CSS / Total percentages out of a coverage status block."""
+    pcts = {}
+    for key in ("JS", "CSS", "Total"):
+        m = re.search(rf"{key}:\s*([\d.]+)%", coverage_text)
+        if m:
+            pcts[key.lower()] = float(m.group(1))
+    return pcts
+
+
+def next_plan_step(output: str) -> str:
+    """Return the first pending (○) item from a cua-plan command's output."""
+    for line in (output or "").splitlines():
+        s = line.strip()
+        if s.startswith("○"):
+            t = s[1:].strip()
+            t = re.sub(r"^\d+\.\s*", "", t)      # leading "3. "
+            t = re.sub(r"^\[START\]\s*", "", t)  # "[START] "
+            t = re.sub(r"^\d+\.\s*", "", t)      # duplicated "3. "
+            return t
+    return ""
+
+
+def make_step_title(command: str, output: str) -> str:
+    """A concise, useful step title — not the first slice of a giant plan."""
+    cmd = (command or "").strip()
+    if not cmd:
+        return "(no command)"
+    if cmd.startswith("cua-plan"):
+        nxt = next_plan_step(output)
+        return f"Plan → next: {nxt}" if nxt else "Plan → all steps done"
+    return cmd.splitlines()[0]
+
+
+def extract_system_prompt(llm_input: list) -> str:
+    """Return the system prompt text from a step's (redacted) llm_input."""
+    for msg in llm_input or []:
+        if msg.get("role") == "system":
+            c = msg.get("content")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                return "\n".join(
+                    p.get("text", "") for p in c if isinstance(p, dict)
+                )
+    return ""
+
+
+def coverage_class(pct: float) -> str:
+    """entropy-style green/orange/red bucket for a coverage percentage."""
+    if pct >= 60:
+        return "cov-high"
+    if pct >= 25:
+        return "cov-mid"
+    return "cov-low"
+
+
+def coverage_sparkline(series: list) -> str:
+    """Tiny inline SVG line chart of Total coverage % across steps."""
+    pts = [p for p in series if p is not None]
+    if len(pts) < 2:
+        return ""
+    w, h = 160, 28
+    n = len(series)
+    hi = max(pts) or 1.0
+    coords = []
+    for i, p in enumerate(series):
+        if p is None:
+            continue
+        x = round(i / (n - 1) * w, 1) if n > 1 else 0
+        y = round(h - (p / hi) * (h - 4) - 2, 1)
+        coords.append(f"{x},{y}")
+    return (
+        f'<svg class="sparkline" width="{w}" height="{h}" '
+        f'viewBox="0 0 {w} {h}" preserveAspectRatio="none">'
+        f'<polyline points="{" ".join(coords)}" fill="none" '
+        f'stroke="currentColor" stroke-width="1.5"/></svg>'
+    )
+
+
 def generate_html(session: dict) -> str:
     """Generate a self-contained HTML trace viewer."""
     trace = session["trace"]
@@ -179,6 +278,7 @@ def generate_html(session: dict) -> str:
     steps_html = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    coverage_series = []  # Total coverage % per step (None where absent)
 
     for i, step in enumerate(trace):
         if step.get("event") == "task_complete":
@@ -247,40 +347,52 @@ def generate_html(session: dict) -> str:
                            f'<summary>Uncertain tokens ({len(low_conf)})</summary>'
                            f'<div class="lc-tokens">{lc_items}</div></details>')
 
-        # Extract a11y tree from prompt (between "Accessibility tree:" and next section)
-        a11y = ""
-        if "Accessibility tree:" in prompt_text:
-            a11y_start = prompt_text.index("Accessibility tree:")
-            a11y_section = prompt_text[a11y_start:]
-            # Find the end - either next major section or end
-            for marker in ["\nCoverage status:", "\nCurrent plan:", "\nHere is the updated",
-                          "\n⚠ WARNING:", "\nCreate a plan"]:
-                if marker in a11y_section:
-                    a11y_section = a11y_section[:a11y_section.index(marker)]
-                    break
-            a11y = a11y_section.strip()
+        # Extract the dynamic blocks the agent appends to each prompt.
+        a11y = extract_section(prompt_text, "Accessibility tree:", _BLOCK_MARKERS)
+        plan = extract_section(prompt_text, "Current plan:", _BLOCK_MARKERS)
+        coverage = extract_section(prompt_text, "Coverage status:", _BLOCK_MARKERS)
 
-        # Extract plan from prompt
-        plan = ""
-        if "Current plan:" in prompt_text:
-            plan_start = prompt_text.index("Current plan:")
-            plan_section = prompt_text[plan_start:]
-            for marker in ["\nAccessibility tree:", "\nHere is the updated",
-                          "\n⚠ WARNING:", "\nCoverage status:"]:
-                if marker in plan_section:
-                    plan_section = plan_section[:plan_section.index(marker)]
-                    break
-            plan = plan_section.strip()
+        # Coverage badge — Total % from this step's coverage snapshot.
+        cov_pcts = parse_coverage(coverage)
+        cov_total = cov_pcts.get("total")
+        coverage_series.append(cov_total)
+        if cov_total is not None:
+            cov_badge = (f'<span class="cov-badge {coverage_class(cov_total)}" '
+                         f'title="JS {cov_pcts.get("js", 0)}% · '
+                         f'CSS {cov_pcts.get("css", 0)}%">'
+                         f'{cov_total:.1f}%</span>')
+        else:
+            cov_badge = ""
+
+        system_prompt = extract_system_prompt(step.get("llm_input", []))
+        step_title = make_step_title(command, output)
 
         img_tag = ""
         if screenshot_b64:
             img_tag = f'<img src="data:image/png;base64,{screenshot_b64}" class="screenshot" loading="lazy">'
 
+        sys_html = ""
+        if system_prompt and system_prompt != "[system prompt]":
+            sys_html = ('<details class="section"><summary>System prompt</summary>'
+                        '<pre class="sysprompt">' + html.escape(system_prompt)
+                        + '</pre></details>')
+        elif system_prompt == "[system prompt]":
+            sys_html = ('<div class="section"><div class="label">System prompt</div>'
+                        '<pre class="output">Not captured in this trace — re-run '
+                        'with the updated audit plugin to record it.</pre></div>')
+
+        user_html = ""
+        if prompt_text:
+            user_html = ('<details class="section"><summary>User prompt (full)</summary>'
+                         '<pre class="userprompt">' + html.escape(prompt_text)
+                         + '</pre></details>')
+
         steps_html.append(f"""
         <div class="step" id="step-{step_num}">
           <div class="step-header" onclick="this.parentElement.classList.toggle('collapsed')">
             <span class="badge step-num">Step {step_num}</span>
-            <span class="step-title">{html.escape(command[:80]) if command else '(no command)'}</span>
+            <span class="step-title">{html.escape(step_title)}</span>
+            {cov_badge}
             <span class="tokens">{pt:,}→{ct:,} ({tok_s} tok/s)</span>
             {entropy_badge}
             <span class="chevron">▾</span>
@@ -291,21 +403,34 @@ def generate_html(session: dict) -> str:
                 {img_tag}
               </div>
               <div class="col-right">
-                {'<details class="section"><summary>Thinking</summary><pre class="think">' + html.escape(thinking) + '</pre></details>' if thinking else ''}
+                {'<details class="section" open><summary>Reasoning</summary><pre class="think">' + html.escape(thinking) + '</pre></details>' if thinking else ''}
                 <div class="section">
                   <div class="label">Command</div>
                   <pre class="command">{html.escape(command)}</pre>
                 </div>
                 {'<details class="section"><summary>Output</summary><pre class="output">' + html.escape(output) + '</pre></details>' if output else ''}
+                {'<details class="section" open><summary>Coverage</summary><pre class="coverage">' + html.escape(coverage) + '</pre></details>' if coverage else ''}
                 {low_conf_html}
                 {'<details class="section"><summary>Plan</summary><pre class="plan">' + html.escape(plan) + '</pre></details>' if plan else ''}
                 {'<details class="section"><summary>Accessibility Tree</summary><pre class="a11y">' + html.escape(a11y) + '</pre></details>' if a11y else ''}
+                {user_html}
+                {sys_html}
               </div>
             </div>
           </div>
         </div>""")
 
     outcome_class = "pass" if outcome == "completed" else "fail"
+
+    # Coverage summary for the header (final %, peak %, and a sparkline).
+    cov_vals = [c for c in coverage_series if c is not None]
+    cov_header = ""
+    if cov_vals:
+        cov_header = (
+            f'<span>Coverage <span class="val">{cov_vals[-1]:.1f}%</span> '
+            f'<span class="cov-peak">peak {max(cov_vals):.1f}%</span> '
+            f'{coverage_sparkline(coverage_series)}</span>'
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -641,6 +766,49 @@ pre.a11y {{
   border: 1px solid #2a2440;
 }}
 
+pre.coverage {{
+  background: #0c1a14;
+  color: #7cd8b0;
+  border: 1px solid #1e3a2e;
+}}
+
+pre.sysprompt {{
+  background: #16141c;
+  color: #9b94b0;
+  border: 1px solid #2a2638;
+}}
+
+pre.userprompt {{
+  background: #141618;
+  color: #a0a8b8;
+  border: 1px solid var(--border);
+}}
+
+.cov-badge {{
+  font-size: 10px;
+  font-family: var(--mono);
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}}
+
+.cov-high {{ background: #052e16; color: var(--green); border: 1px solid #166534; }}
+.cov-mid  {{ background: #1c1a05; color: var(--orange); border: 1px solid #854d0e; }}
+.cov-low  {{ background: #2c0b0e; color: var(--red); border: 1px solid #7f1d1d; }}
+
+.cov-peak {{
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}}
+
+.sparkline {{
+  color: var(--accent);
+  vertical-align: middle;
+  margin-left: 4px;
+}}
+
 .completion {{
   border-color: #166534;
 }}
@@ -751,6 +919,7 @@ kbd {{
     <span>Outcome <span class="val {outcome_class}">{outcome}</span></span>
     <span>Time <span class="val">{wall_time:.0f}s</span></span>
     <span>Tokens <span class="val">{total_prompt_tokens + total_completion_tokens:,} ({total_prompt_tokens:,} in / {total_completion_tokens:,} out)</span></span>
+    {cov_header}
   </div>
 </div>
 
