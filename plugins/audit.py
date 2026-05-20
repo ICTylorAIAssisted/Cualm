@@ -22,6 +22,23 @@ import os
 from datetime import datetime
 
 
+def _probe_upstream_model() -> str:
+    """Best-effort: ask the upstream OpenAI-compatible server which model
+    it's serving. Returns "" on any failure — the trace viewer falls back
+    to the CUA_MODEL alias in that case."""
+    import urllib.request
+    base = os.environ.get(
+        "OPENAI_BASE_URL", "http://localhost:8000/v1"
+    ).rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{base}/models", timeout=3) as r:
+            data = json.loads(r.read())
+        models = data.get("data") or []
+        return (models[0] or {}).get("id", "") if models else ""
+    except Exception:
+        return ""
+
+
 def on_startup(ctx):
     """Create the session directory and write initial metadata."""
     audit_base = ctx["cfg"].get("audit", "base_dir")
@@ -37,6 +54,7 @@ def on_startup(ctx):
     meta = {
         "task": ctx.get("task", ""),
         "model": ctx.get("model", ""),
+        "upstream_model": _probe_upstream_model(),
         "started_at": datetime.now().isoformat(),
         "screen": f"{ctx['screen_w']}x{ctx['screen_h']}",
     }

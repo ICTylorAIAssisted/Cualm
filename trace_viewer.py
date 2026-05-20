@@ -210,17 +210,37 @@ def coverage_sparkline(series: list) -> str:
     )
 
 
-def generate_html(session: dict) -> str:
+def _wall_time_from_trace(trace: list) -> float:
+    """Best-effort: first→last step timestamp delta in seconds."""
+    from datetime import datetime
+    ts = [s.get("timestamp") for s in trace if s.get("timestamp")]
+    if len(ts) < 2:
+        return 0
+    try:
+        return (datetime.fromisoformat(ts[-1]) -
+                datetime.fromisoformat(ts[0])).total_seconds()
+    except (ValueError, TypeError):
+        return 0
+
+
+def generate_html(session: dict, *, model_override: str = "",
+                  label: str = "") -> str:
     """Generate a self-contained HTML trace viewer."""
     trace = session["trace"]
     meta = session["metadata"]
     task_info = session.get("task_info", {})
 
     task = meta.get("task", "Unknown task")
-    model = meta.get("model", "Unknown model")
+    model = (
+        model_override
+        or meta.get("upstream_model")
+        or meta.get("model", "Unknown model")
+    )
     outcome = meta.get("outcome", "unknown")
-    total_steps = meta.get("steps", len(trace))
-    wall_time = meta.get("wall_time_sec", 0)
+    total_steps = meta.get("steps", len(trace)) or len(
+        [s for s in trace if s.get("step")]
+    )
+    wall_time = meta.get("wall_time_sec") or _wall_time_from_trace(trace)
 
     # Build evaluation info panel
     eval_html = ""
@@ -422,13 +442,13 @@ def generate_html(session: dict) -> str:
 
     outcome_class = "pass" if outcome == "completed" else "fail"
 
-    # Coverage summary for the header (final %, peak %, and a sparkline).
+    # Coverage summary for the header (final % + sparkline).
+    # Coverage is cumulative per session, so peak == final by construction.
     cov_vals = [c for c in coverage_series if c is not None]
     cov_header = ""
     if cov_vals:
         cov_header = (
             f'<span>Coverage <span class="val">{cov_vals[-1]:.1f}%</span> '
-            f'<span class="cov-peak">peak {max(cov_vals):.1f}%</span> '
             f'{coverage_sparkline(coverage_series)}</span>'
         )
 
@@ -915,9 +935,10 @@ kbd {{
   <h1>{html.escape(task[:120])}</h1>
   <div class="meta">
     <span>Model <span class="val">{html.escape(model)}</span></span>
+    {f'<span>Variant <span class="val">{html.escape(label)}</span></span>' if label else ''}
     <span>Steps <span class="val">{total_steps}</span></span>
     <span>Outcome <span class="val {outcome_class}">{outcome}</span></span>
-    <span>Time <span class="val">{wall_time:.0f}s</span></span>
+    <span>Time <span class="val">{int(wall_time)//60}m {int(wall_time)%60:02d}s</span></span>
     <span>Tokens <span class="val">{total_prompt_tokens + total_completion_tokens:,} ({total_prompt_tokens:,} in / {total_completion_tokens:,} out)</span></span>
     {cov_header}
   </div>
@@ -969,7 +990,8 @@ document.addEventListener('keydown', e => {{
 </html>"""
 
 
-def process_path(input_path: Path, output: str | None = None) -> str | None:
+def process_path(input_path: Path, output: str | None = None, *,
+                 model_override: str = "", label: str = "") -> str | None:
     """Process a single path, return output filepath or None."""
     session = find_session_dir(input_path)
     if not session:
@@ -981,7 +1003,9 @@ def process_path(input_path: Path, output: str | None = None) -> str | None:
         print(f"  ⚠ Empty trace in {session}", file=sys.stderr)
         return None
 
-    html_content = generate_html(data)
+    html_content = generate_html(
+        data, model_override=model_override, label=label
+    )
 
     if output:
         out_path = output
@@ -1014,6 +1038,18 @@ def main():
         action="store_true",
         help="Process all task directories under the given path",
     )
+    parser.add_argument(
+        "--model",
+        default="",
+        help="Override the model name shown in the header "
+             "(metadata.json usually only records the CUA_MODEL alias).",
+    )
+    parser.add_argument(
+        "--label",
+        default="",
+        help="Short variant label shown next to the model, e.g. "
+             "'with reasoning' / 'without reasoning'.",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.path)
@@ -1023,7 +1059,11 @@ def main():
         count = 0
         for task_dir in sorted(input_path.iterdir()):
             if task_dir.is_dir() and task_dir.name.isdigit():
-                result = process_path(task_dir)
+                result = process_path(
+                    task_dir,
+                    model_override=args.model,
+                    label=args.label,
+                )
                 if result:
                     count += 1
         if count:
@@ -1032,7 +1072,10 @@ def main():
             print("No audit sessions found", file=sys.stderr)
             sys.exit(1)
     else:
-        result = process_path(input_path, args.output)
+        result = process_path(
+            input_path, args.output,
+            model_override=args.model, label=args.label,
+        )
         if not result:
             sys.exit(1)
 
