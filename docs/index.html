@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>CUA coverage traces — Gemma 4 reasoning A/B</title>
+<title>CUA coverage traces — Gemma 4 A/B</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root {
@@ -13,27 +13,45 @@
   }
   html,body{background:var(--bg);color:var(--text);margin:0;
     font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
-  main{max-width:880px;margin:0 auto;padding:48px 24px;}
+  main{max-width:980px;margin:0 auto;padding:48px 24px;}
   h1{font-size:22px;margin:0 0 4px;}
-  .sub{color:var(--dim);font-size:13px;margin-bottom:32px;}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:24px;}
   .meta{color:var(--dim);font-size:12px;font-family:var(--mono);
     margin-bottom:32px;}
   .meta code{background:var(--surface2);padding:1px 6px;border-radius:3px;
     color:var(--text);}
-  .cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+
+  section{margin-bottom:28px;}
+  section h2{font-size:13px;color:var(--dim);text-transform:uppercase;
+    letter-spacing:.6px;margin:0 0 12px;font-weight:600;}
+  section h2 .badge{font-family:var(--mono);text-transform:none;
+    background:var(--surface2);color:var(--text);padding:2px 7px;
+    border-radius:3px;margin-left:8px;letter-spacing:0;font-size:11px;}
+
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
   @media (max-width:680px){.cards{grid-template-columns:1fr;}}
   a.card{display:block;background:var(--surface);border:1px solid var(--border);
-    border-radius:8px;padding:18px 20px;color:inherit;text-decoration:none;
+    border-radius:8px;padding:16px 18px;color:inherit;text-decoration:none;
     transition:border-color .15s,transform .15s;}
   a.card:hover{border-color:var(--accent);transform:translateY(-1px);}
-  .card h2{margin:0 0 8px;font-size:16px;}
+  .card h3{margin:0 0 4px;font-size:15px;}
   .card .tag{display:inline-block;font-family:var(--mono);font-size:11px;
     padding:2px 7px;border-radius:3px;background:var(--surface2);
     color:var(--dim);margin-left:6px;vertical-align:middle;}
-  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 16px;
-    font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:10px;}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 12px;
+    font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:8px;}
   .stats b{color:var(--text);font-weight:600;}
-  .takeaway{margin-top:32px;background:var(--surface);border:1px solid var(--border);
+
+  table.compare{width:100%;border-collapse:collapse;
+    font-family:var(--mono);font-size:12px;margin-top:8px;}
+  table.compare th,table.compare td{padding:8px 10px;text-align:left;
+    border-bottom:1px solid var(--border);}
+  table.compare th{color:var(--dim);font-weight:500;}
+  table.compare td b{color:var(--text);}
+  table.compare tr:last-child td{border-bottom:0;}
+  .best{color:var(--good);}
+
+  .takeaway{margin-top:8px;background:var(--surface);border:1px solid var(--border);
     border-radius:8px;padding:16px 20px;}
   .takeaway h3{margin:0 0 6px;font-size:13px;color:var(--dim);
     text-transform:uppercase;letter-spacing:.5px;}
@@ -44,40 +62,84 @@
 </head>
 <body>
 <main>
-  <h1>CUA coverage testing — Gemma 4 reasoning A/B</h1>
-  <p class="sub">Two runs of the coverage agent against the bundled demo site,
-    differing only in whether the model's reasoning mode is enabled.</p>
+  <h1>CUA coverage testing — Gemma 4 A/B</h1>
+  <p class="sub">Four runs of the coverage agent against the bundled demo
+    site: two model sizes × reasoning on / off.</p>
 
   <div class="meta">
-    Model: <code>google/gemma-4-26B-A4B-it</code> &nbsp;·&nbsp;
+    GPU: <code>A100-80GB (bf16)</code> &nbsp;·&nbsp;
     Target: <code>http://coverage-target/</code> &nbsp;·&nbsp;
     Max steps: <code>50</code>
   </div>
 
-  <div class="cards">
-    <a class="card" href="with-reasoning.html">
-      <h2>With reasoning <span class="tag">enable_thinking: true</span></h2>
-      <div class="stats">
-        <span>Steps: <b>23</b></span><span>Time: <b>4m 39s</b></span>
-        <span>Coverage: <b>53.5%</b></span>
-      </div>
-    </a>
-    <a class="card" href="without-reasoning.html">
-      <h2>Without reasoning <span class="tag">enable_thinking: false</span></h2>
-      <div class="stats">
-        <span>Steps: <b>32</b></span><span>Time: <b>4m 52s</b></span>
-        <span>Coverage: <b>59.9%</b></span>
-      </div>
-    </a>
-  </div>
+  <section>
+    <h2>Gemma 4 — 26B-A4B-it <span class="badge">MoE, 4B active</span></h2>
+    <div class="cards">
+      <a class="card" href="with-reasoning.html">
+        <h3>With reasoning <span class="tag">enable_thinking: true</span></h3>
+        <div class="stats">
+          <span>Steps: <b>23</b></span>
+          <span>Time: <b>4m 39s</b></span>
+          <span>Coverage: <b>53.5%</b></span>
+        </div>
+      </a>
+      <a class="card" href="without-reasoning.html">
+        <h3>Without reasoning <span class="tag">enable_thinking: false</span></h3>
+        <div class="stats">
+          <span>Steps: <b>32</b></span>
+          <span>Time: <b>4m 52s</b></span>
+          <span>Coverage: <b>59.9%</b></span>
+        </div>
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Gemma 4 — 31B-it <span class="badge">dense</span></h2>
+    <div class="cards">
+      <a class="card" href="31b-with-reasoning.html">
+        <h3>With reasoning <span class="tag">enable_thinking: true</span></h3>
+        <div class="stats">
+          <span>Steps: <b>9</b></span>
+          <span>Time: <b>4m 12s</b></span>
+          <span>Coverage: <b>53.5%</b></span>
+        </div>
+      </a>
+      <a class="card" href="31b-without-reasoning.html">
+        <h3>Without reasoning <span class="tag">enable_thinking: false</span></h3>
+        <div class="stats">
+          <span>Steps: <b>17</b></span>
+          <span>Time: <b>4m 40s</b></span>
+          <span>Coverage: <b>63.4%</b></span>
+        </div>
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Side-by-side</h2>
+    <table class="compare">
+      <thead>
+        <tr><th>Variant</th><th>Steps</th><th>Time</th><th>Coverage</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>26B-A4B · reasoning</td><td>23</td><td>4m 39s</td><td>53.5%</td></tr>
+        <tr><td>26B-A4B · no reasoning</td><td>32</td><td>4m 52s</td><td>59.9%</td></tr>
+        <tr><td>31B · reasoning</td><td>9</td><td>4m 12s</td><td>53.5%</td></tr>
+        <tr><td>31B · no reasoning</td><td><b>17</b></td><td><b>4m 40s</b></td><td><b class="best">63.4%</b></td></tr>
+      </tbody>
+    </table>
+  </section>
 
   <div class="takeaway">
     <h3>Takeaway</h3>
-    <p>For this particular coverage task, disabling reasoning was both
-       <b>faster per step</b> and reached <b>higher coverage</b>
-       (+6.4 pp) in roughly the same wall-clock time — the per-step
-       latency saved by skipping <code>&lt;think&gt;</code> blocks bought
-       extra exploration steps.</p>
+    <p>Reasoning hurts on this task at both sizes — the per-step latency
+      cost buys fewer exploration steps and the model already plans well
+      enough without it. The bigger 31B-dense without reasoning gets the
+      highest coverage (63.4%) despite producing fewer total steps than
+      26B-A4B, suggesting it picks better actions per step. Reasoning-on
+      runs converge to the same ~53.5% ceiling at both sizes — bottlenecked
+      by step budget, not by model capability.</p>
   </div>
 
   <footer>
