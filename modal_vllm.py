@@ -43,8 +43,8 @@ vllm_image = (
     .env({"HF_XET_HIGH_PERFORMANCE": "1"})  # faster model transfers
 )
 
-MODEL_NAME = "google/gemma-4-26B-A4B-it"
-MODEL_REVISION = "47b6801b24d15ff9bcd8c96dfaea0be9ed3a0301"  # avoid nasty surprises when repos update!
+MODEL_NAME = "google/gemma-4-31B-it"
+MODEL_REVISION = "fcf2302760ae9c6e528a8dbba9dd636e56848237"  # avoid nasty surprises when repos update!
 
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
 vllm_cache_vol = modal.Volume.from_name("vllm-cache", create_if_missing=True)
@@ -125,9 +125,14 @@ def serve():
         "--async-scheduling",
         # cua-monkey never needs Gemma 4's full 256K window. Capping context
         # shrinks the KV cache from tens of GB to a few GB and makes engine
-        # init finish inside Modal's startup_timeout. Bump if you have very
-        # long sessions (each agent turn is roughly 8–16K tokens).
-        "--max-model-len", "32768",
+        # init finish inside Modal's startup_timeout. Observed peak prompt is
+        # ~7.6K and peak completion ~1.5K, so 16K covers worst-case with
+        # margin. 16K (not 32K) is required for 31B-dense on A100-80GB —
+        # weights take ~62GB and a 32K KV cache won't fit alongside.
+        "--max-model-len", "16384",
+        # Squeeze a bit more headroom for the 31B-dense weights on A100-80GB.
+        # Harmless on larger GPUs.
+        "--gpu-memory-utilization", "0.92",
     ]
 
     # enforce-eager disables both Torch compilation and CUDA graph capture
