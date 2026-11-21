@@ -66,6 +66,7 @@ To watch the agent work, open any VNC viewer on `localhost:5900`.
 | `eval_js` | Evaluate JavaScript in the page |
 | `click` / `type_text` / `press_key` / `scroll` / `drag` | Raw input in screen pixels |
 | `shell` | Run bash inside the container |
+| `coverage_start` / `coverage_report` | Record JS + CSS code coverage of the page (V8 via CDP); the report lists functions that never ran |
 | `run_task` | Delegate a whole task to cualm's own agent loop (see below) |
 
 Refs are renumbered on every `snapshot`/`screenshot`. Pixel coordinates are

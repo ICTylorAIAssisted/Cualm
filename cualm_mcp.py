@@ -26,6 +26,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
 
 from cdp_a11y import get_a11y_text, navigate as cdp_navigate
+from cdp_coverage import CdpError, CoverageRecorder
 from cua_config import load_config
 
 cfg = load_config()
@@ -239,6 +240,53 @@ async def shell(command: str, timeout: int = 60) -> str:
     DISPLAY is set, so X11 tools (xdotool, etc.) work."""
     _check_idle()
     return await _run(command, shell=True, timeout=timeout)
+
+
+# ── Code coverage ─────────────────────────────────────────
+
+_coverage = CoverageRecorder()
+
+
+@mcp.tool()
+async def coverage_start(url: str | None = None) -> str:
+    """Start recording JS + CSS code coverage of the page (V8 / CDP).
+
+    Opens url (or keeps the current page), arms the profiler, then reloads
+    so every script is instrumented from the first line. Any earlier
+    recording is discarded. Then explore with the other tools and call
+    coverage_report to see how much of the page's code has run.
+    Only http(s)/file scripts and stylesheets are counted, so eval_js,
+    snapshot and screenshot helpers don't inflate the numbers.
+    """
+    _check_idle()
+    try:
+        return await asyncio.to_thread(_coverage.start, url)
+    except (CdpError, RuntimeError) as e:
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+async def coverage_report(top_files: int = 15, list_functions: int = 40,
+                          stop: bool = False) -> str:
+    """Report cumulative code coverage since coverage_start.
+
+    Shows overall JS and CSS byte coverage, functions called / total,
+    per-file percentages (least covered first) and the names of JS
+    functions that never ran — a to-do list of unexplored UI paths.
+    Coverage only grows between reports. stop=True also ends the recording.
+    Works while run_task is running, to measure cualm's own agent.
+    """
+    def _do() -> str:
+        _coverage.snapshot()
+        text = _coverage.report(top_files, list_functions)
+        if stop:
+            _coverage.stop_session()
+            text += "\n\nRecording stopped."
+        return text
+    try:
+        return await asyncio.to_thread(_do)
+    except CdpError as e:
+        raise ToolError(str(e))
 
 
 # ── Delegation ────────────────────────────────────────────

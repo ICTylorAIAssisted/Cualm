@@ -33,6 +33,7 @@ COPY start.sh /app/start.sh
 COPY agent.py /app/agent.py
 COPY cualm_mcp.py /app/cualm_mcp.py
 COPY cdp_a11y.py /app/cdp_a11y.py
+COPY cdp_coverage.py /app/cdp_coverage.py
 COPY cua_config.py /app/cua_config.py
 COPY plugin_host.py /app/plugin_host.py
 COPY tool_discovery.py /app/tool_discovery.py
