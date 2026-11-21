@@ -155,8 +155,9 @@ def cmd_logs(args) -> None:
 
 def cmd_mcp_config(args) -> None:
     url = mcp_url(args.port)
-    print(f"""# Claude Code
-claude mcp add --transport http cualm {url}
+    print(f"""# Claude Code (-s user: available from any folder;
+# drop it to register only for the current folder)
+claude mcp add -s user --transport http cualm {url}
 
 # OpenCode — add to opencode.json
 {{

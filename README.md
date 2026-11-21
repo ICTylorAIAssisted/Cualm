@@ -30,9 +30,17 @@ touching your own desktop.
 **Claude Code**
 
 ```bash
-claude mcp add --transport http cualm http://localhost:8765/mcp
+claude mcp add -s user --transport http cualm http://localhost:8765/mcp
 cp -r skills/cualm ~/.claude/skills/        # optional, recommended
+claude mcp list                             # cualm: ... ✔ Connected
 ```
+
+`-s user` makes cualm available from every folder. Without it, Claude Code
+registers the server only for the folder you ran the command in (`local`
+scope), and `claude mcp list` won't show it anywhere else. With user scope,
+the cualm tools appear in every session and fail while the sandbox is down,
+so run `./cualm up` first. To limit it to one project, leave out `-s user`
+and run the command from that project's folder.
 
 **OpenCode** (`opencode.json`)
 
