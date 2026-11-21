@@ -32,8 +32,20 @@ needs to see it.
 2. Observe:
    - `snapshot()` returns the accessibility tree as text, with `[ref=eN]` on
      interactive elements. It is cheap; prefer it.
+     Its first line, `Page state: …`, comes from cualm, not the page:
+     - scroll position and how many pixels are left below
+     - page height in screens
+     - `dom: changed just now / Ns ago / idle`, which shows whether your last
+       action changed anything (cualm's own badges don't count)
+     - the focused element
+     - the full URL
    - `screenshot()` returns an image with the same refs drawn as red badges.
      Use it for layout and visual questions or when the tree is not enough.
+     The badges follow the page as it scrolls, zooms or moves, after a short
+     delay, but only for refs from the last snapshot. At most 300 badges are
+     drawn (`CUA_MAX_BADGES`), and badges that would overlap are skipped. A
+     red note in the top-right corner says how many refs weren't drawn. Those
+     refs still work; find them in `snapshot()`.
 3. Act, preferring refs:
    - `click_element("e15")`, `fill("e12", "text")`, `select_option("e9", "Label")`
    - Playwright selectors work too: `click_element("text=Sign in")`
@@ -47,6 +59,24 @@ Use `eval_js("...")` to read data directly, such as table rows, input values or
 top-level `const`/`let`.
 
 `shell(cmd)` runs inside the sandbox container, not on the host.
+
+## Measuring code coverage
+
+To find out how much of a page's code your exploration exercised:
+
+1. `coverage_start(url)` opens the page, arms V8's profiler and reloads, so
+   every script is counted from its first line. It discards any earlier
+   recording.
+2. Explore with the normal tools.
+3. `coverage_report()` shows cumulative JS and CSS byte coverage, functions
+   called out of the total, and the never-called functions with `file:line`.
+   Use that list to find UI paths you haven't tried yet. `stop=True` ends the
+   recording.
+
+Only the page's own http(s)/file scripts are counted, so your `eval_js` and
+`snapshot` calls don't inflate the numbers. Functions nested inside functions
+that haven't run yet may not be listed, so the function total can grow as you
+explore.
 
 ## Delegating a whole task (optional)
 

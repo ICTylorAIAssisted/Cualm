@@ -97,7 +97,7 @@ def _cdp_call(ws, method: str, params: dict = None, msg_id: int = 1) -> dict:
 
 
 def _tag_ref_element(backend_dom_node_id: int) -> bool:
-    """Use CDP to tag an element with data-cua-ref='active'.
+    """Use CDP to tag an element with data-cua-active.
 
     This lets Playwright find it via a simple CSS selector.
     Returns True on success.
@@ -117,10 +117,11 @@ def _tag_ref_element(backend_dom_node_id: int) -> bool:
         _cdp_call(ws, "Runtime.callFunctionOn", {
             "objectId": object_id,
             "functionDeclaration": """function() {
-                // Clear any previous ref tag
-                var old = document.querySelector('[data-cua-ref="active"]');
-                if (old) old.removeAttribute('data-cua-ref');
-                this.setAttribute('data-cua-ref', 'active');
+                // Separate attribute, so the element keeps its data-cua-ref
+                // (the ref badge overlay redraws from those tags).
+                var old = document.querySelector('[data-cua-active]');
+                if (old) old.removeAttribute('data-cua-active');
+                this.setAttribute('data-cua-active', '');
             }""",
         }, msg_id=2)
         return True
@@ -161,10 +162,18 @@ def _resolve(page, selector: str):
             raise RuntimeError(f"Could not resolve ref '{s}' to a DOM element "
                              f"(role={ref_info.get('role')}, "
                              f"name={ref_info.get('name')})")
-        return page.locator("[data-cua-ref='active']")
+        return page.locator("[data-cua-active]")
 
     if s.startswith("text="):
-        return page.get_by_text(s[5:])
+        # get_by_text matches substrings, so "Details" also hits a paragraph
+        # saying "Details panel …" and Playwright's strict mode refuses.
+        # Prefer the element whose whole text is exactly the given string.
+        loc = page.get_by_text(s[5:])
+        if loc.count() > 1:
+            exact = page.get_by_text(s[5:], exact=True)
+            if exact.count() >= 1:
+                return exact
+        return loc
     if s.startswith("label="):
         return page.get_by_label(s[6:])
     if s.startswith("placeholder="):

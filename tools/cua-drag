@@ -30,21 +30,31 @@ def cua_drag(
     sx1, sy1 = map_coords(cfg, cal, x1, y1)
     sx2, sy2 = map_coords(cfg, cal, x2, y2)
 
+    def move(x: int, y: int) -> None:
+        subprocess.run(["xdotool", "mousemove", str(x), str(y)],
+                       check=True, env=env)
+
     try:
-        subprocess.run(
-            ["xdotool", "mousemove", str(sx1), str(sy1)],
-            check=True,
-            env=env,
-        )
+        # Chromium only starts an HTML5 drag (dragstart/dragover/drop) after
+        # the pointer moves past a threshold in several real motion events,
+        # and only fires drop if dragover has run on the target. A single
+        # jump from A to B triggers dragstart at best, never drop. So: press,
+        # nudge, glide in steps, hover on the target, then release.
+        move(sx1, sy1)
         time.sleep(0.1)
         subprocess.run(["xdotool", "mousedown", "1"], check=True, env=env)
-        time.sleep(0.1)
-        subprocess.run(
-            ["xdotool", "mousemove", str(sx2), str(sy2)],
-            check=True,
-            env=env,
-        )
-        time.sleep(0.1)
+        time.sleep(0.15)
+        for dx in (2, 5, 10):                 # cross the drag threshold
+            move(sx1 + (dx if sx2 >= sx1 else -dx), sy1)
+            time.sleep(0.05)
+        steps = max(10, int(((sx2 - sx1) ** 2 + (sy2 - sy1) ** 2) ** 0.5 / 20))
+        for i in range(1, steps + 1):
+            move(round(sx1 + (sx2 - sx1) * i / steps),
+                 round(sy1 + (sy2 - sy1) * i / steps))
+            time.sleep(0.02)
+        for jiggle in (1, -1, 0):             # dragover on the drop target
+            move(sx2 + jiggle, sy2)
+            time.sleep(0.1)
         subprocess.run(["xdotool", "mouseup", "1"], check=True, env=env)
     except FileNotFoundError:
         typer.echo("xdotool not found. Install with: apt install xdotool", err=True)

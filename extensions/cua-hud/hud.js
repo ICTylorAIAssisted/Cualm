@@ -12,6 +12,7 @@
   // ── Create the HUD bar ──
   const bar = document.createElement("div");
   bar.id = "__cua-hud__";
+  bar.setAttribute("aria-hidden", "true");   // not page content: keep out of snapshot
   Object.assign(bar.style, {
     position: "fixed",
     bottom: "0",
@@ -71,7 +72,25 @@
   function startDomObserver() {
     if (domObserver) domObserver.disconnect();
     let debounceTimer = null;
-    domObserver = new MutationObserver(() => {
+    // Ignore cualm's own changes (ref badge overlay, data-cua-ref tags),
+    // otherwise every snapshot/screenshot would report "dom: changed just now".
+    const isOurs = (n) => n && n.nodeType === 1 &&
+      (n.id === "cua-ref-overlay" || (n.closest && n.closest("#cua-ref-overlay")));
+    const fromPage = (m) => {
+      if (m.type === "attributes")
+        return m.attributeName !== "data-cua-ref" && m.attributeName !== "data-cua-active";
+      if (m.type === "childList") {
+        if (isOurs(m.target)) return false;
+        const nodes = [...m.addedNodes, ...m.removedNodes];
+        return !(nodes.length && nodes.every(isOurs));
+      }
+      return !isOurs(m.target && m.target.parentElement);
+    };
+    domObserver = new MutationObserver((records) => {
+      if (!records.some(fromPage)) return;
+      // Exact time of the latest page change, for cualm's snapshot to read
+      // (the bar's own text lags by up to UPDATE_INTERVAL + debounce).
+      bar.dataset.lastChange = String(Date.now());
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         lastDomChangeTime = Date.now();
