@@ -1,267 +1,229 @@
 #!/usr/bin/env python3
-"""cualm — Computer Use Agent (Lightweight, Model-agnostic)
+"""cualm — sandboxed computer-use for coding agents.
 
-Single entry point for all agent operations. Auto-detects environment
-and guides setup when dependencies are missing.
+Host-side helper that manages the cualm container (Xvfb + Chromium +
+MCP server).  Works with podman or docker.
 
 Usage:
-  cualm agent "your task"          Run a one-shot task
-  cualm serve                      Start XMPP + orchestrator (phone access)
-  cualm benchmark [OPTS]           Run WebArena benchmark
-  cualm coverage [OPTS]            Run coverage benchmark
-  cualm demo {webarena|coverage|wikipedia|all}  Record demos
-  cualm status                     Check what's running
-  cualm selftest [--full]          Run sanity checks
-  cualm down                       Stop everything
+  cualm build                       Build the container image
+  cualm up [--port N] [--vnc N]     Start the sandbox + MCP server
+  cualm down                        Stop and remove the sandbox
+  cualm status                      Is it running? Is MCP answering?
+  cualm logs                        Follow container logs
+  cualm mcp-config                  Print MCP setup for Claude Code / OpenCode
+  cualm run "task" [--json]         One-shot task with the built-in agent loop
+                                    (fresh container, needs OPENAI_BASE_URL/CUA_MODEL)
 """
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-# Ensure we're in the project root
-SCRIPT_DIR = Path(__file__).parent.resolve()
-os.chdir(SCRIPT_DIR)
-
-# ── Colors ──
-GREEN = "\033[32m"
-RED = "\033[31m"
-DIM = "\033[2m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+ROOT = Path(__file__).parent.resolve()
+IMAGE = os.environ.get("CUALM_IMAGE", "cualm")
+NAME = os.environ.get("CUALM_CONTAINER", "cualm")
+CAL_VOLUME = "cualm-calibration"
 
 
-def load_env():
-    """Load .env file if present."""
-    env_path = SCRIPT_DIR / ".env"
-    if env_path.exists():
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, val = line.partition("=")
-                    key = key.strip()
-                    val = val.strip().strip('"').strip("'")
-                    if key and key not in os.environ:
-                        os.environ[key] = val
+def load_env() -> None:
+    """Load ROOT/.env (does not override existing variables)."""
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip().strip("'\""))
 
 
-def ensure_ready(require_llm=True, require_image=True):
-    """Run preflight checks; exit if blocking issues found.
+def runtime() -> str:
+    rt = os.environ.get("CUALM_RUNTIME")
+    if rt:
+        return rt
+    for cand in ("podman", "docker"):
+        if shutil.which(cand):
+            return cand
+    sys.exit("error: neither podman nor docker found")
 
-    On first run (no agent image), offers to build automatically.
-    """
-    from cualm_preflight import detect_system, run_checks, print_checks
 
-    info = detect_system()
-    results = run_checks(info)
+def llm_env() -> list[str]:
+    """-e flags for the agent's LLM settings (only used by run_task/run)."""
+    base = os.environ.get("OPENAI_BASE_URL", "http://host.docker.internal:8000/v1")
+    # localhost on the host is not localhost in the container
+    for local in ("://localhost", "://127.0.0.1"):
+        base = base.replace(local, "://host.docker.internal")
+    flags = ["-e", f"OPENAI_BASE_URL={base}",
+             "-e", f"OPENAI_API_KEY={os.environ.get('OPENAI_API_KEY', 'not-needed')}",
+             "-e", f"CUA_MODEL={os.environ.get('CUA_MODEL', 'your-model-name')}"]
+    for var in ("CUA_TEMPERATURE", "CUA_TOP_P", "CUA_PRESENCE_PENALTY",
+                "CUA_LLM_EXTRA_PARAMS", "CUA_HISTORY_PAIRS", "CUA_START_URL"):
+        if os.environ.get(var):
+            flags += ["-e", f"{var}={os.environ[var]}"]
+    return flags
 
-    # Relax non-essential checks
-    if not require_llm:
-        for r in results:
-            if r.name == "LLM server":
-                r.blocking = False
-    if not require_image:
-        for r in results:
-            if r.name == "Agent image":
-                r.blocking = False
 
-    # Check for blocking issues
-    blocking = [r for r in results if not r.ok and r.blocking]
+def common_flags() -> list[str]:
+    return ["--add-host", "host.docker.internal:host-gateway",
+            "--shm-size", "1g",
+            "-v", f"{CAL_VOLUME}:/var/cua/calibration"]
 
-    if not blocking:
-        return True  # All good, silent
 
-    # Print issues
-    print(f"\n{BOLD}Checking environment...{RESET}\n")
-    print_checks(results)
+def image_exists(rt: str) -> bool:
+    return subprocess.run([rt, "image", "inspect", IMAGE],
+                          capture_output=True).returncode == 0
 
-    # Auto-build image if that's the only issue
-    image_missing = any(r.name == "Agent image" and not r.ok for r in blocking)
-    other_issues = any(r.name != "Agent image" for r in blocking)
 
-    if image_missing and not other_issues:
-        print(f"  Building agent image (first-time setup)...\n")
-        rc = subprocess.call(["./run.sh", "build"])
-        if rc == 0:
-            print(f"\n  {GREEN}Build complete.{RESET}\n")
-            return True
-        else:
-            print(f"\n  {RED}Build failed (exit {rc}).{RESET}")
-            sys.exit(1)
+def ensure_image(rt: str) -> None:
+    if not image_exists(rt):
+        print(f"Image '{IMAGE}' not found — building it first.", file=sys.stderr)
+        cmd_build(None)
 
-    print(f"\n  {RED}Fix the issues above, then re-run.{RESET}\n")
+
+def mcp_url(port: int) -> str:
+    return f"http://localhost:{port}/mcp"
+
+
+def mcp_alive(port: int) -> bool:
+    try:
+        urllib.request.urlopen(mcp_url(port), timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True  # any HTTP answer means the server is up
+    except Exception:
+        return False
+
+
+# ── Commands ──────────────────────────────────────────────
+
+
+def cmd_build(args) -> None:
+    rt = runtime()
+    rc = subprocess.call([rt, "build", "-t", IMAGE, str(ROOT)])
+    if rc:
+        sys.exit(rc)
+
+
+def cmd_up(args) -> None:
+    rt = runtime()
+    ensure_image(rt)
+    subprocess.run([rt, "rm", "-f", NAME], capture_output=True)
+    cmd = [rt, "run", "-d", "--name", NAME,
+           "-p", f"127.0.0.1:{args.port}:8765",
+           "-p", f"127.0.0.1:{args.vnc}:5900",
+           *common_flags(), *llm_env(), IMAGE, "serve"]
+    rc = subprocess.call(cmd, stdout=subprocess.DEVNULL)
+    if rc:
+        sys.exit(rc)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if mcp_alive(args.port):
+            print(f"cualm is up\n  MCP: {mcp_url(args.port)}\n"
+                  f"  VNC: localhost:{args.vnc}")
+            return
+        time.sleep(1)
+    print(f"MCP server did not answer within 60s — see: {Path(sys.argv[0]).name} logs",
+          file=sys.stderr)
     sys.exit(1)
 
 
-# ── Commands ──
-
-def cmd_agent(args):
-    """Run a one-shot agent task."""
-    ensure_ready()
-    task = " ".join(args.task)
-    os.execvp("./run.sh", ["./run.sh", "agent", task])
+def cmd_down(args) -> None:
+    subprocess.call([runtime(), "rm", "-f", NAME], stdout=subprocess.DEVNULL)
 
 
-def cmd_serve(args):
-    """Start XMPP + orchestrator for phone access."""
-    ensure_ready()
-    os.execvp("./run.sh", ["./run.sh", "up"])
+def cmd_status(args) -> None:
+    rt = runtime()
+    p = subprocess.run([rt, "inspect", "-f", "{{.State.Status}}", NAME],
+                       capture_output=True, text=True)
+    state = p.stdout.strip() if p.returncode == 0 else "not created"
+    print(f"container: {NAME} ({state})")
+    print(f"image:     {IMAGE} ({'present' if image_exists(rt) else 'missing'})")
+    alive = mcp_alive(args.port)
+    print(f"mcp:       {mcp_url(args.port)} ({'up' if alive else 'down'})")
+    sys.exit(0 if alive else 1)
 
 
-def cmd_benchmark(args):
-    """Run WebArena benchmark."""
-    ensure_ready()
-    cmd = ["./benchmark.sh"] + args.extra
-    os.execvp(cmd[0], cmd)
+def cmd_logs(args) -> None:
+    os.execvp(runtime(), [runtime(), "logs", "-f", NAME])
 
 
-def cmd_coverage(args):
-    """Run coverage benchmark."""
-    ensure_ready()
-    cmd = ["./benchmark.sh", "--coverage"] + args.extra
-    os.execvp(cmd[0], cmd)
+def cmd_mcp_config(args) -> None:
+    url = mcp_url(args.port)
+    print(f"""# Claude Code
+claude mcp add --transport http cualm {url}
+
+# OpenCode — add to opencode.json
+{{
+  "mcp": {{
+    "cualm": {{ "type": "remote", "url": "{url}", "enabled": true }}
+  }}
+}}
+
+# Skill (optional, recommended): copy skills/cualm into
+#   ~/.claude/skills/   (Claude Code)
+#   ~/.config/opencode/skills/  (OpenCode)""")
 
 
-def cmd_demo(args):
-    """Record demos."""
-    ensure_ready(require_llm=True)
-    cmd = ["./demo.sh", args.mode] + args.extra
-    os.execvp(cmd[0], cmd)
+def cmd_run(args) -> None:
+    rt = runtime()
+    ensure_image(rt)
+    cmd = [rt, "run", "--rm", *common_flags(), *llm_env()]
+    if args.vnc:
+        cmd += ["-p", f"127.0.0.1:{args.vnc}:5900"]
+    cmd += [IMAGE, "agent", "--max-steps", str(args.max_steps)]
+    if args.start_url:
+        cmd += ["--start-url", args.start_url]
+    if args.json:
+        cmd.append("--json")
+    cmd += ["--", " ".join(args.task)]
+    sys.exit(subprocess.call(cmd))
 
 
-def cmd_down(args):
-    """Stop all services."""
-    # run.sh down
-    subprocess.call(["./run.sh", "down"])
-    # Also stop WebArena sites if running
-    webarena = "compose.d/.webarena/compose.yml"
-    if os.path.exists(webarena):
-        subprocess.call(["docker", "compose", "-f", webarena, "down"],
-                        stderr=subprocess.DEVNULL)
+def main() -> None:
+    load_env()
+    default_port = int(os.environ.get("CUA_MCP_PORT", "8765"))
+    default_vnc = int(os.environ.get("CUA_VNC_PORT", "5900"))
 
-
-def cmd_status(args):
-    """Show running containers and services."""
-    rt = "podman" if os.path.exists("/usr/bin/podman") else "docker"
-
-    print(f"\n{BOLD}cualm status{RESET}\n")
-
-    # Running containers
-    rc = subprocess.call([
-        rt, "ps", "--format",
-        "table {{.Names}}\t{{.Status}}\t{{.Ports}}",
-        "--filter", "label=com.docker.compose.project",
-    ])
-
-    # Also show cualm-related containers
-    print()
-    subprocess.call([
-        rt, "ps", "--format",
-        "table {{.Names}}\t{{.Status}}\t{{.Image}}",
-        "--filter", "name=cua",
-        "--filter", "name=task-",
-        "--filter", "name=bench-",
-        "--filter", "name=coverage-",
-        "--filter", "name=webarena-",
-    ])
-    print()
-
-
-def cmd_selftest(args):
-    """Run sanity checks."""
-    from cualm_selftest import run_selftest
-    max_level = 4 if args.full else (args.level or 3)
-    ok = run_selftest(max_level)
-    sys.exit(0 if ok else 1)
-
-
-def cmd_setup(args):
-    """Explicit setup / environment check."""
-    from cualm_preflight import preflight
-    ok = preflight(require_llm=True, require_image=True)
-    if ok and not args.skip_test:
-        print(f"{BOLD}Running sanity checks...{RESET}")
-        from cualm_selftest import run_selftest
-        run_selftest(max_level=2)
-    sys.exit(0 if ok else 1)
-
-
-# ── Main ──
-
-def main():
     parser = argparse.ArgumentParser(
-        prog="cualm",
-        description="Computer Use Agent — Lightweight, Model-agnostic",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-examples:
-  cualm agent "Search for AI on Wikipedia"
-  cualm serve                              # phone access via XMPP
-  cualm benchmark --tasks 0-10
-  cualm demo webarena
-  cualm selftest --full
-""",
-    )
-    sub = parser.add_subparsers(dest="command")
+        prog="cualm", description="Sandboxed computer-use for coding agents.",
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    # agent
-    p = sub.add_parser("agent", help="Run a one-shot task")
-    p.add_argument("task", nargs="+", help="Task description")
-    p.set_defaults(func=cmd_agent)
+    sub.add_parser("build", help="Build the container image").set_defaults(func=cmd_build)
 
-    # serve
-    p = sub.add_parser("serve", help="Start XMPP + orchestrator")
-    p.set_defaults(func=cmd_serve)
+    p = sub.add_parser("up", help="Start sandbox + MCP server")
+    p.add_argument("--port", type=int, default=default_port, help="MCP host port")
+    p.add_argument("--vnc", type=int, default=default_vnc, help="VNC host port")
+    p.set_defaults(func=cmd_up)
 
-    # benchmark
-    p = sub.add_parser("benchmark", help="Run WebArena benchmark")
-    p.add_argument("extra", nargs="*", help="Extra args for benchmark.sh")
-    p.set_defaults(func=cmd_benchmark)
+    sub.add_parser("down", help="Stop the sandbox").set_defaults(func=cmd_down)
 
-    # coverage
-    p = sub.add_parser("coverage", help="Run coverage benchmark")
-    p.add_argument("extra", nargs="*", help="Extra args")
-    p.set_defaults(func=cmd_coverage)
-
-    # demo
-    p = sub.add_parser("demo", help="Record demos")
-    p.add_argument("mode", choices=["webarena", "coverage", "wikipedia", "all"])
-    p.add_argument("extra", nargs="*")
-    p.set_defaults(func=cmd_demo)
-
-    # status
-    p = sub.add_parser("status", help="Show running services")
+    p = sub.add_parser("status", help="Show sandbox status")
+    p.add_argument("--port", type=int, default=default_port)
     p.set_defaults(func=cmd_status)
 
-    # down
-    p = sub.add_parser("down", help="Stop everything")
-    p.set_defaults(func=cmd_down)
+    sub.add_parser("logs", help="Follow container logs").set_defaults(func=cmd_logs)
 
-    # selftest
-    p = sub.add_parser("selftest", help="Run sanity checks")
-    p.add_argument("--full", action="store_true", help="Include end-to-end test")
-    p.add_argument("--level", type=int, help="Specific level (1-4)")
-    p.set_defaults(func=cmd_selftest)
+    p = sub.add_parser("mcp-config", help="Print MCP client setup")
+    p.add_argument("--port", type=int, default=default_port)
+    p.set_defaults(func=cmd_mcp_config)
 
-    # setup
-    p = sub.add_parser("setup", help="Check/fix environment")
-    p.add_argument("--skip-test", action="store_true",
-                    help="Skip sanity tests after setup")
-    p.set_defaults(func=cmd_setup)
+    p = sub.add_parser("run", help="One-shot task with the built-in agent loop")
+    p.add_argument("task", nargs="+")
+    p.add_argument("--start-url")
+    p.add_argument("--max-steps", type=int, default=30)
+    p.add_argument("--json", action="store_true",
+                   help="Logs to stderr, JSON result on stdout")
+    p.add_argument("--vnc", type=int, help="Expose VNC on this host port")
+    p.set_defaults(func=cmd_run)
 
     args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        sys.exit(0)
-
-    # Load .env
-    load_env()
-
-    # Run command
     args.func(args)
 
 

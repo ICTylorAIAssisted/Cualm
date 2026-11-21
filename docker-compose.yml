@@ -1,29 +1,29 @@
-# CUA Agent — base compose file
+# cualm sandbox — MCP server mode.
 #
-# This runs the agent by itself.  Drop-in extensions live in compose.d/
-# and are discovered automatically by run.sh.
+#   docker compose up -d        (or: ./cualm up)
+#   MCP endpoint: http://localhost:8765/mcp
+#   VNC (watch):  localhost:5900
 #
-# Usage:
-#   ./run.sh up                    # starts agent + any compose.d/ extensions
-#   ./run.sh agent "your task"
-#   ./run.sh down
+# OPENAI_* / CUA_MODEL are only needed for the run_task tool.
 
 services:
-  cua:
+  cualm:
     build: .
-    image: cua-agent
-    container_name: cua
+    image: cualm
+    container_name: cualm
+    command: ["serve"]
     environment:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:8000/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-not-needed}
       CUA_MODEL: ${CUA_MODEL:-your-model-name}
     ports:
-      - "${CUA_VNC_PORT:-5900}:5900"
+      - "127.0.0.1:${CUA_MCP_PORT:-8765}:8765"
+      - "127.0.0.1:${CUA_VNC_PORT:-5900}:5900"
     volumes:
-      - cua-calibration:/var/cua/calibration
+      - cualm-calibration:/var/cua/calibration
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
+    shm_size: 1gb
 
 volumes:
-  cua-calibration:
+  cualm-calibration:

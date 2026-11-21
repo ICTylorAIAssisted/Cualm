@@ -4,7 +4,7 @@ Drop Python files into this directory to extend the agent.  Plugins
 come in two forms:
 
 1. **Flat files** — `plugins/my_webhook.py` is loaded directly.
-2. **Directory plugins** — `plugins/xmpp/plugin.py` is loaded as
+2. **Directory plugins** — `plugins/myplugin/plugin.py` is loaded as
    the entry point.  The directory is added to `sys.path` so the
    plugin can import its own subpackages.
 
@@ -128,12 +128,6 @@ These ship with the agent as top-level files:
 - **usage_tracking.py** — Tracks token usage and prints per-step and
   session-level stats.  Delete to silence token logging.
 
-The `xmpp/` directory plugin adds XMPP messaging:
-
-- **xmpp/** — Enables the agent to send/receive messages via XMPP.
-  Includes a background daemon and CLI tools (`cua-xmpp-send`,
-  `cua-xmpp-recv`, `cua-xmpp-wait`, etc.).  See `xmpp/README.md`.
-
 ## Directory structure
 
 ```
@@ -141,14 +135,8 @@ plugins/
   README.md                ← this file
   audit.py                 ← bundled: screenshot + metadata logging
   usage_tracking.py        ← bundled: token counting
-  xmpp/                    ← directory plugin
+  myplugin/                ← your directory plugin
     plugin.py              ← entry point (loaded by plugin host)
-    requirements.txt       ← plugin dependencies
-    xmpp_tools/            ← shared config module
-    tools/                 ← CLI tools (the actual implementations)
-      cua-xmpp-send
-      cua-xmpp-recv
-      ...
   my_webhook.py            ← your flat-file plugin (gitignored)
 ```
 

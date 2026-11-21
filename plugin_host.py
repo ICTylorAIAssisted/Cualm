@@ -3,9 +3,9 @@
 Scans a plugin directory and loads plugins in two forms:
 
 1. **Flat files** — ``plugins/my_plugin.py`` is loaded directly.
-2. **Directory plugins** — ``plugins/xmpp/plugin.py`` is loaded as the
+2. **Directory plugins** — ``plugins/myplugin/plugin.py`` is loaded as the
    entry point.  The directory is added to ``sys.path`` so the plugin
-   can import its own subpackages (e.g. ``from xmpp_tools import …``).
+   can import its own subpackages (e.g. ``from myplugin_lib import …``).
 
 Only files/dirs at the top level of the plugins directory are
 considered — the loader never recurses into subdirectories looking

@@ -84,6 +84,39 @@ def _cdp_call(ws, method: str, params: dict = None, msg_id: int = 1) -> dict:
             return resp
 
 
+def navigate(url: str, wait_sec: float = 10.0) -> str:
+    """Navigate the active tab to *url* via CDP and wait for load.
+
+    Works for any scheme (http, file, about:) regardless of the current
+    page, unlike setting location.href from page JS.  Returns the final
+    URL, or raises RuntimeError on navigation errors.
+    """
+    import time
+    ws_url = _get_page_ws_url()
+    ws = websocket.create_connection(ws_url, timeout=wait_sec + 5)
+    try:
+        resp = _cdp_call(ws, "Page.navigate", {"url": url}, msg_id=1)
+        err = resp.get("error") or resp.get("result", {}).get("errorText")
+        if err:
+            raise RuntimeError(f"navigation to {url} failed: {err}")
+        time.sleep(0.3)  # let the old document unload before polling
+        deadline = time.monotonic() + wait_sec
+        msg_id = 2
+        while time.monotonic() < deadline:
+            r = _cdp_call(ws, "Runtime.evaluate",
+                          {"expression": "document.readyState + ' ' + location.href",
+                           "returnByValue": True}, msg_id=msg_id)
+            msg_id += 1
+            val = r.get("result", {}).get("result", {}).get("value", "")
+            state, _, href = val.partition(" ")
+            if state == "complete":
+                return href
+            time.sleep(0.2)
+        return url
+    finally:
+        ws.close()
+
+
 def fetch_a11y_tree() -> list[dict]:
     """Fetch the full accessibility tree from CDP."""
     ws_url = _get_page_ws_url()

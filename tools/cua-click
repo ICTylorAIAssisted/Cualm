@@ -80,7 +80,7 @@ def cua_click(
 
     try:
         subprocess.run(
-            ["xdotool", "mousemove", "--sync", str(sx), str(sy)],
+            ["xdotool", "mousemove", str(sx), str(sy)],
             check=True,
             env=env,
         )

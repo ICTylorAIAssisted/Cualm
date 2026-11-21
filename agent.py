@@ -23,7 +23,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from cua_config import load_config, calibration_file_for_model, load_calibration
-from cdp_a11y import get_a11y_text
+from cdp_a11y import get_a11y_text, navigate
 from plugin_host import PluginHost
 from tool_discovery import discover_tools
 
@@ -62,12 +62,8 @@ RUN_OUTPUT_DIR = cfg.get("run", "output_dir")
 
 MODEL = os.environ.get("CUA_MODEL", "your-model-name")
 
-# Coverage mode — when enabled, agent starts CDP coverage recording after
-# navigation and auto-snapshots every N steps, injecting results into prompt.
-COVERAGE_ENABLED = os.environ.get("CUA_COVERAGE", "") == "1"
-COVERAGE_INTERVAL = int(os.environ.get("CUA_COVERAGE_INTERVAL", "") or 1)
-
 CALIBRATION_PROMPT = "You see a button on screen. Click it."
+CALIBRATION_URL = "file:///app/calibration/index.html"
 
 PLUGINS_DIR = os.environ.get(
     "CUA_PLUGINS_DIR",
@@ -604,42 +600,16 @@ def trim_messages(
     return messages[:sys_count] + messages[-keep:]
 
 
-# ── Coverage helpers ──────────────────────────────────────
-
-def _start_coverage() -> bool:
-    """Start CDP coverage recording. Returns True on success."""
-    try:
-        r = subprocess.run(
-            ["python3", "/app/tools/cua-cdp-coverage", "start"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0:
-            print(f"   📊 Coverage recording started")
-            return True
-        print(f"   ⚠ Coverage start failed: {r.stderr.strip() or r.stdout.strip()}")
-    except Exception as e:
-        print(f"   ⚠ Coverage start error: {e}")
-    return False
-
-
-def _coverage_snapshot() -> str:
-    """Take a coverage snapshot, return summary text for prompt injection."""
-    try:
-        r = subprocess.run(
-            ["python3", "/app/tools/cua-cdp-coverage", "snapshot"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
-    except Exception:
-        pass
-    return ""
-
-
 # ── Agent loop ────────────────────────────────────────────
 
 
-def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
+def run_agent(task: str, max_steps: int = MAX_STEPS,
+              start_url: str | None = None) -> dict[str, Any]:
+    """Run the task to completion and return a result dict.
+
+    Keys: status ("completed" | "max_steps" | "error"), summary, result,
+    steps, wall_time_sec, model, audit_dir (if the audit plugin is loaded).
+    """
     agent_start = time.monotonic()
 
     # ── Build context ──
@@ -708,7 +678,8 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     MAX_CAL_ATTEMPTS = 3    # retry if verification fails
 
     existing_cal = load_calibration(cfg)
-    start_url = os.environ.get("CUA_START_URL", "")
+    if start_url is None:
+        start_url = os.environ.get("CUA_START_URL", "")
 
     if existing_cal is not None:
         print(f"\n── Calibration (cached) ──")
@@ -716,6 +687,9 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     else:
         print("\n── Calibration (multi-step) ──")
         calibrated = False
+        # Calibration assumes the page fills the whole screen
+        run_command("cua-key F11")
+        time.sleep(1)
 
         for attempt in range(MAX_CAL_ATTEMPTS):
             # Clear any stale calibration so cua-click recalibrates
@@ -724,17 +698,13 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
 
             if attempt > 0:
                 print(f"   Retry {attempt + 1}/{MAX_CAL_ATTEMPTS}")
-                # Reload the calibration page for a fresh attempt
-                run_command("cua-key F11")
-                time.sleep(0.3)
-                run_command("cua-key ctrl+l")
-                time.sleep(0.1)
-                run_command('cua-type "file:///app/calibration/index.html"')
-                run_command("cua-key Return")
-                time.sleep(1)
-                # Re-enter fullscreen
-                run_command("cua-key F11")
-                time.sleep(0.5)
+            # (Re)load the calibration page.  The browser is already
+            # fullscreen, so the target button sits at screen center.
+            try:
+                navigate(CALIBRATION_URL)
+            except Exception as e:
+                print(f"   ⚠ Could not load calibration page: {e}")
+            time.sleep(0.5)
 
             # Do CALIBRATION_STEPS rounds of screenshot → click
             for click_round in range(CALIBRATION_STEPS):
@@ -800,23 +770,17 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
             cx, cy = SCREEN_W // 2, SCREEN_H // 2
             run_command(f"cua-click {cx} {cy}")
 
-    # ── Start coverage BEFORE navigation ──
-    # CDP Profiler.startPreciseCoverage only instruments scripts loaded
-    # AFTER the call.  By starting here (while still on calibration page),
-    # the subsequent navigation loads the target page's scripts under the
-    # profiler from the very first byte.
-    if COVERAGE_ENABLED:
-        _start_coverage()
+        # Leave fullscreen so the address bar is visible during the task
+        run_command("cua-key F11")
+        time.sleep(0.5)
 
     # Navigate to the task start URL (or about:blank if not set)
-    run_command("cua-key F11")
-    time.sleep(0.3)
-    run_command("cua-key ctrl+l")
-    time.sleep(0.1)
     nav_url = start_url or "about:blank"
-    run_command(f'cua-type "{nav_url}"')
-    run_command("cua-key Return")
-    time.sleep(3 if start_url else 0.5)
+    try:
+        navigate(nav_url)
+    except Exception as e:
+        print(f"   ⚠ Navigation to {nav_url} failed: {e}")
+    time.sleep(1 if start_url else 0.2)
 
     # Reset context — drop calibration exchange so the model starts fresh
     # and doesn't treat the calibration click as the user's actual task.
@@ -927,19 +891,6 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
         ctx["step"] = step + 1
         print(f"\n── Step {step + 1} ──")
 
-        # ── Coverage auto-snapshot ──
-        coverage_text = ""
-        if COVERAGE_ENABLED and step > 0 and step % COVERAGE_INTERVAL == 0:
-            coverage_text = _coverage_snapshot()
-            if coverage_text:
-                # Find the "Total:" line for a compact log message
-                for cline in coverage_text.splitlines():
-                    if "Total:" in cline or "JS:" in cline:
-                        print(f"   📊 {cline.strip()}")
-                        break
-                else:
-                    print(f"   📊 Coverage snapshot taken")
-
         # ── Accessibility tree (fetched before screenshot so ref badges
         #    are injected and visible in the screenshot) ──
         t0 = time.monotonic()
@@ -989,9 +940,6 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
                 print(f"   🔄 Loop detected — injecting warning")
                 parts.append("")
                 parts.append(loop_warning)
-            if coverage_text:
-                parts.append("")
-                parts.append(f"Coverage status:\n{coverage_text}")
             parts.append("")
             parts.append(
                 "Here is the updated screenshot. "
@@ -1096,12 +1044,42 @@ def run_agent(task: str, max_steps: int = MAX_STEPS) -> None:
     if not task_done:
         print("\n⚠ Reached max steps.")
 
+    return {
+        "status": ctx["outcome"],
+        "summary": done_payload.get("summary"),
+        "result": done_payload.get("result"),
+        "steps": ctx["step"],
+        "wall_time_sec": round(elapsed, 1),
+        "model": MODEL,
+        "audit_dir": ctx.get("audit_session_dir"),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import contextlib
+
+    p = argparse.ArgumentParser(description="Run a computer-use task.")
+    p.add_argument("task", nargs="+", help="Task description")
+    p.add_argument("--start-url", default=None,
+                   help="URL to open before the task (default: $CUA_START_URL)")
+    p.add_argument("--max-steps", type=int, default=MAX_STEPS)
+    p.add_argument("--json", action="store_true",
+                   help="Send logs to stderr and print a JSON result on stdout")
+    args = p.parse_args(argv)
+    task = " ".join(args.task)
+
+    if args.json:
+        with contextlib.redirect_stdout(sys.stderr):
+            try:
+                res = run_agent(task, args.max_steps, args.start_url)
+            except Exception as e:
+                res = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+        print(json.dumps(res))
+    else:
+        res = run_agent(task, args.max_steps, args.start_url)
+    return 0 if res.get("status") == "completed" else 1
+
 
 if __name__ == "__main__":
-    task = (
-        " ".join(sys.argv[1:])
-        or "Open Chromium and find Artificial Intelligence article in Wikipedia"
-        " (by loading wikipedia.org first and searching)."
-        " Answer with the first link from the article references."
-    )
-    run_agent(task)
+    sys.exit(main())

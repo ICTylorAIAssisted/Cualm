@@ -18,6 +18,7 @@ Examples:
 """
 
 import subprocess
+import time
 import sys
 
 import typer
@@ -106,10 +107,11 @@ def cua_scroll(
 
     try:
         subprocess.run(
-            ["xdotool", "mousemove", "--sync", str(sx), str(sy)],
+            ["xdotool", "mousemove", str(sx), str(sy)],
             check=True,
             env=env,
         )
+        time.sleep(0.1)
         subprocess.run(
             ["xdotool", "click", "--repeat", str(clicks), button],
             check=True,

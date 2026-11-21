@@ -6,6 +6,7 @@ Requires calibration (run `click` at screen center first).
 """
 
 import subprocess
+import time
 
 import typer
 
@@ -31,16 +32,19 @@ def cua_drag(
 
     try:
         subprocess.run(
-            ["xdotool", "mousemove", "--sync", str(sx1), str(sy1)],
+            ["xdotool", "mousemove", str(sx1), str(sy1)],
             check=True,
             env=env,
         )
+        time.sleep(0.1)
         subprocess.run(["xdotool", "mousedown", "1"], check=True, env=env)
+        time.sleep(0.1)
         subprocess.run(
-            ["xdotool", "mousemove", "--sync", str(sx2), str(sy2)],
+            ["xdotool", "mousemove", str(sx2), str(sy2)],
             check=True,
             env=env,
         )
+        time.sleep(0.1)
         subprocess.run(["xdotool", "mouseup", "1"], check=True, env=env)
     except FileNotFoundError:
         typer.echo("xdotool not found. Install with: apt install xdotool", err=True)

@@ -1,6 +1,6 @@
 """Integration tests: agent navigation.
 
-Requires Docker/Podman and the cua-agent image built.
+Requires Docker/Podman and the cualm image built.
 Uses mock LLM — no real model needed.
 """
 
@@ -28,7 +28,7 @@ def _run_agent(runtime, llm_url, task, max_steps=5, timeout=60):
         "-e", f"CUA_MAX_STEPS={max_steps}",
         "-e", "CUA_START_URL=https://example.com",
         "-e", "PYTHONUNBUFFERED=1",
-        "cua-agent",
+        "cualm",
         "agent", task,
     ]
 
@@ -47,11 +47,11 @@ def _run_agent(runtime, llm_url, task, max_steps=5, timeout=60):
 def agent_image(runtime):
     """Skip if agent image not built."""
     result = subprocess.run(
-        [runtime, "image", "inspect", "cua-agent"],
+        [runtime, "image", "inspect", "cualm"],
         capture_output=True,
     )
     if result.returncode != 0:
-        pytest.skip("cua-agent image not built (run: ./run.sh build)")
+        pytest.skip("cualm image not built (run: ./cualm build)")
 
 
 class TestAgentNavigation:

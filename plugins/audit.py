@@ -8,7 +8,7 @@ base path.  Captures:
     timing for every step (trace.json)
   - **Metadata** — task, model, outcome, usage totals (metadata.json)
 
-The step trace is the primary debugging tool for benchmark runs.
+The step trace is the primary debugging tool for agent runs.
 Each entry records the full LLM reasoning (including <think> blocks),
 the extracted command, the command's output, and token usage — enough
 to understand why the agent did what it did at each step.
